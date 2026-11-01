@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Secrets: only .env.example is ever committed.
+.env
+.env.*
+!.env.example
+
+.DS_Store
+*.log
+
+# Extension packaging keys must never be committed.
+*.pem
+*.crx

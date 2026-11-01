@@ -1,0 +1,193 @@
+# TASK 1 — DOPILOT: Complete Project Initialization
+
+## Project Overview
+
+Build **Dopilot**, an open-source, voice-controlled AI browser agent that operates Chrome and Brave.
+
+Users will visit our website, connect the browser extension, enter their own Groq API key, and instruct the AI to perform browser tasks.
+
+The agent will eventually support voice commands, visual understanding, clicking, typing, scrolling, tab management, and autonomous multi-step workflows.
+
+**This task is ONLY for project initialization, architecture, dependency installation, and validation. Do not implement actual agent functionality yet.**
+
+## 1. Technology Stack
+
+Use:
+
+- **Frontend:** Next.js, TypeScript, Tailwind CSS, Lucide React.
+- **Backend:** Node.js, Fastify, TypeScript, Zod.
+- **Browser Extension:** Manifest V3, React, TypeScript, Vite, Chrome Extension APIs.
+- **AI:** Groq SDK, supporting text and vision-capable models.
+- **Agent Framework:** Custom TypeScript agent loop with structured tool calls.
+- **MCP:** Official MCP TypeScript SDK v2.
+- **Voice:** Browser Web Speech APIs, with graceful compatibility fallbacks.
+- **Monorepo:** pnpm workspaces.
+- **Testing:** Vitest, ESLint, Prettier.
+- **Database:** None initially. Keep the architecture ready for future persistence.
+
+Only use free, open-source dependencies and services with usable free tiers.
+
+## 2. Project Folder Structure
+
+Create the following architecture:
+
+```text
+dopilot/
+├── apps/
+│   ├── web/
+│   │   ├── src/
+│   │   │   ├── app/
+│   │   │   ├── components/
+│   │   │   ├── hooks/
+│   │   │   ├── lib/
+│   │   │   └── styles/
+│   │   ├── public/
+│   │   └── package.json
+│   │
+│   ├── backend/
+│   │   ├── src/
+│   │   │   ├── config/
+│   │   │   ├── routes/
+│   │   │   ├── services/
+│   │   │   ├── agent/
+│   │   │   ├── ai/
+│   │   │   ├── mcp/
+│   │   │   ├── security/
+│   │   │   └── index.ts
+│   │   └── package.json
+│   │
+│   └── extension/
+│       ├── src/
+│       │   ├── background/
+│       │   ├── content/
+│       │   ├── sidepanel/
+│       │   ├── permissions/
+│       │   ├── messaging/
+│       │   └── lib/
+│       ├── public/
+│       └── package.json
+│
+├── packages/
+│   ├── shared/
+│   ├── agent-core/
+│   ├── browser-tools/
+│   └── mcp-tools/
+│
+├── docs/
+├── scripts/
+├── .env.example
+├── .gitignore
+├── package.json
+├── pnpm-workspace.yaml
+├── pnpm-lock.yaml
+└── README.md
+```
+
+Adjust details where necessary to ensure compatibility and avoid unnecessary boilerplate.
+
+## 3. Architecture Requirements
+
+Prepare clean boundaries between:
+
+1. Web interface and user settings.
+2. Browser extension and browser interaction.
+3. AI model communication.
+4. Agent reasoning and execution loop.
+5. MCP tool integration.
+6. Shared message schemas and validation.
+
+Design the browser extension to operate in both Chrome and Brave.
+
+Use the extension's background service worker for browser commands and content scripts for webpage interaction.
+
+Prepare a browser side panel for future agent conversations.
+
+The web app and extension must have a secure, well-defined communication strategy. Do not assume a normal webpage can directly invoke privileged extension APIs.
+
+Use MCP v2 official packages and prepare the architecture for exposing browser capabilities through MCP-compatible tool interfaces.
+
+Do not require Playwright, PyAutoGUI, Python, or a desktop helper for ordinary browser actions. Use native extension APIs.
+
+## 4. Security Requirements
+
+Prepare for:
+
+- User-provided Groq API keys.
+- No hardcoded credentials.
+- No API keys committed to Git.
+- No transmitting API keys to our own backend unless explicitly required and approved.
+- No secrets in logs.
+- Permission-based browser access.
+- Explicit confirmation for sensitive browser actions.
+- Agent stop/cancel controls.
+- Execution limits and loop protection.
+- Strong validation of AI-generated actions.
+- Protection against webpage prompt injection.
+
+Design API-key storage and model requests appropriately for a browser extension, recognizing that client-side keys cannot be completely protected from the device owner or malicious extensions.
+
+Avoid requesting unnecessary browser permissions.
+
+## 5. Setup and Installation
+
+Complete the following:
+
+1. Inspect the current `dopilot` directory.
+2. Preserve `note.txt`.
+3. Check installed Node.js, pnpm, and Git versions.
+4. Install missing development tools if necessary, using compatible free versions.
+5. Initialize the pnpm monorepo.
+6. Create all workspace packages.
+7. Install the necessary dependencies.
+8. Configure TypeScript across all packages.
+9. Configure ESLint and Prettier.
+10. Configure workspace imports and aliases.
+11. Prepare environment-variable examples.
+12. Add root development, build, lint, typecheck, and test scripts.
+13. Prepare the Manifest V3 extension configuration.
+14. Configure Next.js and Fastify.
+15. Prepare shared Zod message schemas.
+16. Add basic health-check endpoints and minimal application entry points.
+
+Keep the code lightweight and maintainable.
+
+## 6. Basic Verification
+
+Verify that:
+
+- Dependencies install successfully.
+- Frontend starts locally.
+- Backend starts locally.
+- Backend health check works.
+- Extension builds successfully.
+- Chrome/Brave can load the unpacked extension.
+- Shared packages compile.
+- TypeScript checks pass.
+- ESLint passes.
+- Basic smoke tests pass.
+
+Do not claim that browser installation or manual browser testing succeeded unless actually verified.
+
+## 7. Important Restrictions
+
+- Do not implement autonomous browsing yet.
+- Do not make live Groq API calls.
+- Do not implement voice commands yet.
+- Do not introduce paid services.
+- Do not deploy anything.
+- Do not create unnecessary features or complex infrastructure.
+- Do not commit or push to GitHub unless requested.
+- Do not create separate Markdown task-completion reports.
+- Preserve the original `note.txt` file.
+
+## 8. Expected Final Response
+
+After implementation, give a concise summary containing:
+
+1. Folder structure created.
+2. Tools and dependencies installed.
+3. Frontend and backend startup commands.
+4. Extension build and loading instructions.
+5. Verification results and any unresolved issues.
+
+**Goal:** A clean, professional, fully initialized Dopilot monorepo, ready for Task 2 — Frontend UI and Browser Extension Integration.

@@ -1,0 +1,25 @@
+{
+  "name": "@dopilot/browser-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Declarative, validated catalog of browser tools. No browser API calls live here.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dopilot/shared": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Dopilot",
+  "version": "0.1.0",
+  "description": "Open-source, voice-controlled AI browser agent.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "host_permissions": ["https://api.groq.com/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Dopilot"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "externally_connectable": {
+    "matches": ["http://localhost:3000/*"]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://api.groq.com"
+  }
+}

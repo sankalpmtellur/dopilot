@@ -1,0 +1,28 @@
+{
+  "name": "@dopilot/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run --parallel \"/^watch:/\"",
+    "watch:app": "vite build --watch --mode development",
+    "watch:content": "vite build --watch --mode development -c vite.content.config.ts",
+    "build": "vite build && vite build -c vite.content.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dopilot/agent-core": "workspace:*",
+    "@dopilot/browser-tools": "workspace:*",
+    "@dopilot/shared": "workspace:*",
+    "groq-sdk": "^1.6.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.5"
+  }
+}

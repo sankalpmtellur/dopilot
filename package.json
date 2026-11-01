@@ -1,0 +1,38 @@
+{
+  "name": "dopilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source, voice-controlled AI browser agent for Chrome and Brave.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build:packages": "pnpm --filter \"./packages/*\" build",
+    "dev": "pnpm build:packages && pnpm --parallel --filter \"./packages/*\" --filter \"./apps/*\" dev",
+    "dev:web": "pnpm build:packages && pnpm --filter @dopilot/web dev",
+    "dev:backend": "pnpm build:packages && pnpm --filter @dopilot/backend dev",
+    "dev:extension": "pnpm build:packages && pnpm --filter @dopilot/extension dev",
+    "build": "pnpm build:packages && pnpm --filter \"./apps/*\" build",
+    "typecheck": "pnpm build:packages && pnpm -r typecheck",
+    "lint": "pnpm build:packages && eslint .",
+    "test": "pnpm build:packages && vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify:extension": "node scripts/verify-extension.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.0.0",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  }
+}
