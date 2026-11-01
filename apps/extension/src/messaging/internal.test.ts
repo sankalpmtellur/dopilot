@@ -21,6 +21,8 @@ function deps(): InternalDeps {
     getApproval: vi.fn(async () => null),
     mcpStatus: () => ({ enabled: false, connected: false }),
     mcpConfigure: vi.fn(async () => undefined),
+    transcribe: vi.fn(async () => ({ text: 'hi', error: null })),
+    getScreenshot: vi.fn(() => 'data:image/jpeg;base64,/9j/'),
   };
 }
 
@@ -86,6 +88,18 @@ describe('handleInternalMessage', () => {
       await handleInternalMessage(configure, { id: ID, origin: 'https://evil.example' }, mocks),
     ).toBeNull();
     expect(mocks.mcpConfigure).not.toHaveBeenCalled();
+  });
+
+  it('only gives screenshots to extension pages', async () => {
+    const mocks = deps();
+    const get = { protocolVersion: PROTOCOL_VERSION, type: 'panel.get_screenshot', id: 's1' };
+    expect(
+      await handleInternalMessage(get, { id: ID, origin: 'https://evil.example' }, mocks),
+    ).toBeNull();
+    expect(mocks.getScreenshot).not.toHaveBeenCalled();
+    expect(await handleInternalMessage(get, page, mocks)).toMatchObject({
+      type: 'panel.screenshot',
+    });
   });
 
   it('ignores invalid messages', async () => {

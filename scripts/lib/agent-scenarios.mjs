@@ -900,7 +900,7 @@ export async function verifyAgent(name, executable, extensionPath) {
     mcpProcess = client;
 
     const { tools: listed } = await client.listTools();
-    check('MCP lists every browser tool', listed.length === 20, `${listed.length} tools`);
+    check('MCP lists every browser tool', listed.length === 24, `${listed.length} tools`);
 
     const parse = (result) => JSON.parse(result.content[0].text);
     const offline = parse(await client.callTool({ name: 'get_tabs', arguments: {} }));
@@ -940,6 +940,24 @@ export async function verifyAgent(name, executable, extensionPath) {
       'MCP really reads a page',
       mcpRead.ok && mcpRead.data.title === 'Turing test',
       mcpRead.data?.title,
+    );
+
+    const mcpShot = parse(
+      await client.callTool({
+        name: 'capture_visible_tab',
+        arguments: { tabId: mcpOpen.currentTabId },
+      }),
+    );
+    const mcpVision = parse(
+      await client.callTool({
+        name: 'analyze_screenshot',
+        arguments: { tabId: mcpOpen.currentTabId, question: 'What is here?' },
+      }),
+    );
+    check(
+      'MCP cannot get images or send them for analysis',
+      !JSON.stringify(mcpShot).includes('base64') && !mcpVision.ok,
+      mcpVision.code,
     );
 
     const mcpClose = await client.callTool({

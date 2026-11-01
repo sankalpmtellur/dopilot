@@ -6,3 +6,5 @@ export * from './groq.js';
 export * from './health.js';
 export * from './messages.js';
 export * from './url-policy.js';
+export * from './vision.js';
+export * from './voice.js';

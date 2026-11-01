@@ -147,11 +147,52 @@ pastes the server's token in settings. The token lasts for the browser session. 
 loopback, requires the token and checks the Host header against DNS rebinding. MCP has no way to show a
 prompt, so anything needing approval or an ungranted site is refused.
 
+## Vision
+
+Vision uses the same agent and loop. The main model stays a text model with tools, and asks for
+sight through tools. A separate vision model answers, and only its text comes back, so the main model
+never receives an image. The system prompt steers it to the DOM tools first, since a screenshot costs
+far more. Tasks are limited to 5 images, an unchanged page is not captured twice, and a repeated
+question about one screenshot is answered from memory.
+
+**Grounding.** `get_visual_page_context` sends a screenshot with numbered boxes over the page's real
+controls, plus a list of their roles, names and colours. The model's answer only counts if it names a
+box that exists, and the result is a normal element ref for `click_element`, with all its checks. For
+things with no element, such as a canvas, it may report a point, which gets an ID. `click_visual_target`
+takes only that ID, so the main model cannot pass coordinates at all. Before clicking, it compares tab,
+address, window size, scroll position, age and a fingerprint of the on-screen controls with the
+screenshot, and stops if any differ. It scales the point to page coordinates, finds what is really
+there, and applies the usual safety policy to that element. Contents of embedded frames cannot be
+inspected or clicked, and Dopilot says so.
+
+**Permissions.** Browsers only allow `captureVisibleTab` with `activeTab` or `<all_urls>`. Clicking the
+toolbar icon grants `activeTab` for that tab, until it navigates. Otherwise Dopilot asks for `<all_urls>`,
+which is optional and can be removed. That permission would make every per-site check succeed, so
+`authorizedSites` records what the user really approved, and that list decides while it is held.
+
+**Privacy.** Only the visible, authorized, non-private tab can be captured, and never internal pages or
+CAPTCHAs. Password, card and code fields, and frames that look like payment forms, are painted over
+before anything else sees the image. Before an image is sent, the user sees it and agrees, once per site
+per task, or for every image on payment-like pages. Images are held in the worker's memory, never in
+storage or tool results, and are dropped when the task ends. The website has no way to request them.
+
 ## Voice
 
-Voice input will use the browser's Web Speech APIs and must fall back to text where
-they are unavailable, since support varies by browser. Check this in Brave
-specifically, because speech recognition may not work there.
+Voice is push-to-talk: hold to talk, or tap to start and tap to finish. Nothing listens otherwise, and the
+microphone is released as soon as a recording ends. Transcripts go through the normal command pipeline,
+so exact commands stay free and instant, and anything else goes to the agent. Saying "stop" is handled
+locally, without any AI.
+
+Chromium's speech API is used when it works, and is free. Brave ships the API without a speech service, so
+there it fails with a network error. The fallback records with `MediaRecorder` and sends the audio to Groq's
+speech-to-text, but only if the user turned that on in extension settings. The website can use it through
+the bridge, but cannot turn it on. Recordings are limited to 20 seconds and are never stored.
+
+Browsers may not show a microphone prompt inside a side panel, so settings can ask from a normal tab.
+
+Spoken replies are off by default. They use `speechSynthesis`, announce the first action and a short result,
+and stop for new input or the Stop button. An answer that may contain page content is never read aloud: Dopilot
+says the answer is on screen instead.
 
 ## Persistence
 

@@ -14,7 +14,10 @@ describe('manifest', () => {
     expect(manifest.host_permissions).toEqual(['https://api.groq.com/*']);
     expect(manifest.optional_permissions).toEqual(['tabs']);
     // Sites are granted one at a time, at the moment the agent needs them.
-    expect(manifest.optional_host_permissions).toEqual(['http://*/*', 'https://*/*']);
+    // <all_urls> is only requested for screenshots, because browsers accept nothing narrower.
+    // Dopilot keeps its own list of authorized sites, so it does not unlock every site.
+    expect(manifest.optional_host_permissions).toEqual(['http://*/*', 'https://*/*', '<all_urls>']);
+    expect(manifest.host_permissions).not.toContain('<all_urls>');
     expect(JSON.stringify(manifest.permissions)).not.toContain('<all_urls>');
   });
 

@@ -42,6 +42,8 @@ export type ModelErrorKind =
   | 'network'
   | 'server'
   | 'request_too_large'
+  /** The provider refused this image, often for its size. */
+  | 'image_rejected'
   | 'cancelled';
 
 export class ModelError extends Error {

@@ -1,6 +1,6 @@
 import { ArrowUp, Mic, Square } from 'lucide-react';
 import { useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
+import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import { IconButton } from './button.js';
 
 export interface CommandComposerProps {
@@ -12,6 +12,8 @@ export interface CommandComposerProps {
   /** Lets other UI, such as example commands, fill in the input. */
   value?: string;
   onValueChange?: (value: string) => void;
+  /** Controls beside the input, such as the microphone. Typing works without them. */
+  voiceControls?: ReactNode;
 }
 
 export function CommandComposer({
@@ -21,6 +23,7 @@ export function CommandComposer({
   canStop = false,
   value,
   onValueChange,
+  voiceControls,
 }: CommandComposerProps) {
   const [internal, setInternal] = useState('');
   const text = value ?? internal;
@@ -52,9 +55,13 @@ export function CommandComposer({
         className="block max-h-32 w-full resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-faint"
       />
       <div className="flex items-center justify-between">
-        <IconButton label="Voice input, coming soon" disabled>
-          <Mic aria-hidden="true" className="size-4" />
-        </IconButton>
+        <div className="flex items-center gap-0.5">
+          {voiceControls ?? (
+            <IconButton label="Voice input is not available" disabled>
+              <Mic aria-hidden="true" className="size-4" />
+            </IconButton>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           {onStop && (
             <IconButton label="Stop" onClick={onStop} disabled={!canStop}>

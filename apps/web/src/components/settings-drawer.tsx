@@ -101,6 +101,27 @@ export function SettingsDrawer({
             </div>
           </Section>
 
+          <Section title="Voice and vision">
+            {state ? (
+              <>
+                <div className="flex items-center justify-between gap-2 text-[13px]">
+                  <span className="text-muted">Voice through Groq</span>
+                  <span>{state.preferences.speechFallback ? 'Allowed' : 'Off'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[13px]">
+                  <span className="text-muted">Screenshots</span>
+                  <span>{state.preferences.vision ? 'On, asks first' : 'Off'}</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-[13px] text-muted">Connect the extension to use these.</p>
+            )}
+            <p className="text-xs leading-relaxed text-faint">
+              These are changed in the extension. Approvals and screenshot previews only appear
+              there, so this website never receives your screenshots.
+            </p>
+          </Section>
+
           <Section title="Extension">
             <div className="flex items-center justify-between gap-2 text-[13px]">
               <span className="text-muted">Status</span>

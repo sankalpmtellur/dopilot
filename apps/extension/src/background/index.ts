@@ -7,7 +7,8 @@ import {
 import { testGroqKey } from '@/lib/groq-test';
 import { createExternalHandler } from '@/messaging/external';
 import { handleInternalMessage } from '@/messaging/internal';
-import { agentRunner, handleWindowClosed, mcpBridge, startAgentTask } from './agent-host';
+import { transcribeAudio } from '@/lib/speech-service';
+import { agentRunner, handleWindowClosed, mcpBridge, startAgentTask, vision } from './agent-host';
 import { buildState, confirmations, runPanelCommand, runWebsiteCommand } from './runtime';
 
 // Listeners are registered synchronously so the browser can wake this worker for each event.
@@ -35,6 +36,7 @@ const handleExternalMessage = createExternalHandler({
     startAgentTask(instruction, 'website', senderTabId ?? null),
   stopAgent: () => agentRunner.stop(),
   resetAgent: () => agentRunner.reset(),
+  transcribe: (audio, mimeType) => transcribeAudio(audio, mimeType),
 });
 
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
@@ -52,7 +54,7 @@ async function runGroqTest() {
     const apiKey = await loadApiKey();
     if (!apiKey) return;
     const outcome = await testGroqKey(apiKey);
-    await recordConnectionTest(outcome.connection, outcome.models);
+    await recordConnectionTest(outcome.connection, outcome.models, outcome.other);
   })().finally(() => {
     groqTest = null;
   });
@@ -76,6 +78,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const run = await agentRunner.view();
       return run?.approval?.id === id ? run.approval : null;
     },
+    transcribe: (audio, mimeType) => transcribeAudio(audio, mimeType),
+    getScreenshot: (id) => vision.getImage(id),
     mcpStatus: () => mcpBridge.status(),
     mcpConfigure: (token) => mcpBridge.configure(token),
   })

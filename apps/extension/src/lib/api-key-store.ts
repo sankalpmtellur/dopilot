@@ -1,4 +1,5 @@
 import {
+  DEFAULT_VISION_FALLBACK,
   GroqConnectionSchema,
   GroqModelSchema,
   maskApiKey,
@@ -14,6 +15,11 @@ const SettingsSchema = z.object({
   connection: GroqConnectionSchema,
   models: z.array(GroqModelSchema),
   selectedModel: z.string().nullable(),
+  // Defaults, because settings saved by an earlier version do not have these.
+  visionModels: z.array(GroqModelSchema).default([]),
+  selectedVisionModel: z.string().nullable().default(null),
+  visionFallback: z.string().default(DEFAULT_VISION_FALLBACK),
+  speechModels: z.array(GroqModelSchema).default([]),
 });
 type GroqSettings = z.infer<typeof SettingsSchema>;
 
@@ -21,6 +27,10 @@ const INITIAL_SETTINGS: GroqSettings = {
   connection: { state: 'untested', checkedAt: null },
   models: [],
   selectedModel: null,
+  visionModels: [],
+  selectedVisionModel: null,
+  visionFallback: DEFAULT_VISION_FALLBACK,
+  speechModels: [],
 };
 
 /**
@@ -79,6 +89,7 @@ export async function loadGroqStatus(): Promise<GroqStatus> {
 export async function recordConnectionTest(
   connection: GroqConnection,
   models: GroqModel[] | null,
+  other?: { visionModels: GroqModel[]; speechModels: GroqModel[] } | null,
 ): Promise<void> {
   const settings = await loadSettings();
   const nextModels = models ?? settings.models;
@@ -86,6 +97,8 @@ export async function recordConnectionTest(
     models === null || models.some((model) => model.id === settings.selectedModel);
   await chrome.storage.local.set({
     [SETTINGS_STORAGE]: {
+      ...settings,
+      ...(other ?? {}),
       connection,
       models: nextModels,
       selectedModel: stillAvailable ? settings.selectedModel : null,
@@ -108,6 +121,23 @@ export async function markKeyRejected(state: 'invalid_key' | 'forbidden'): Promi
     [SETTINGS_STORAGE]: {
       ...settings,
       connection: { state, checkedAt: Date.now() },
+    } satisfies GroqSettings,
+  });
+}
+
+export async function selectVisionModel(modelId: string | null): Promise<void> {
+  const settings = await loadSettings();
+  await chrome.storage.local.set({
+    [SETTINGS_STORAGE]: { ...settings, selectedVisionModel: modelId } satisfies GroqSettings,
+  });
+}
+
+export async function setVisionFallback(modelId: string): Promise<void> {
+  const settings = await loadSettings();
+  await chrome.storage.local.set({
+    [SETTINGS_STORAGE]: {
+      ...settings,
+      visionFallback: modelId.trim() || DEFAULT_VISION_FALLBACK,
     } satisfies GroqSettings,
   });
 }

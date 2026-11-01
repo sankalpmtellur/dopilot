@@ -125,6 +125,23 @@ export async function startAgentTask(
     : 'The extension refused that request.';
 }
 
+/** Audio goes to the extension, which sends it to Groq only if the user agreed there. */
+export async function transcribeThroughExtension(
+  extensionId: string,
+  audio: string,
+  mimeType: 'audio/webm' | 'audio/ogg' | 'audio/mp4',
+): Promise<{ text: string | null; error: string | null }> {
+  const outcome = await send(
+    extensionId,
+    { type: 'external.transcribe', audio, mimeType },
+    { timeoutMs: 40_000 },
+  );
+  if (outcome.ok && outcome.response.type === 'external.transcription') {
+    return { text: outcome.response.text, error: outcome.response.error };
+  }
+  return { text: null, error: 'The extension could not transcribe that. Is it connected?' };
+}
+
 export async function stopAgentTask(extensionId: string): Promise<boolean> {
   const outcome = await send(extensionId, { type: 'external.agent_stop' });
   return outcome.ok && outcome.response.type === 'external.ack';

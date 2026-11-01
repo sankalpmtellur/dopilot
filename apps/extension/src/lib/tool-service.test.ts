@@ -56,6 +56,7 @@ let content: ContentPort & { send: ReturnType<typeof vi.fn>; canAccess: ReturnTy
 let permissions: PermissionPort & {
   hasTabDetails: ReturnType<typeof vi.fn>;
   hasOrigin: ReturnType<typeof vi.fn>;
+  hasAllUrls: ReturnType<typeof vi.fn>;
 };
 let service: ReturnType<typeof createToolService>;
 
@@ -94,6 +95,7 @@ beforeEach(() => {
   permissions = {
     hasTabDetails: vi.fn(async () => true),
     hasOrigin: vi.fn(async () => true),
+    hasAllUrls: vi.fn(async () => false),
   };
   service = createToolService({ api, content, permissions, sleep: async () => undefined });
 });
@@ -130,6 +132,18 @@ describe('permissions', () => {
   it('uses access the browser already granted through activeTab', async () => {
     permissions.hasOrigin.mockResolvedValue(false);
     expect((await assess('get_visible_text')).decision).toBe('allow');
+  });
+
+  it('does not let screenshot access unlock every site', async () => {
+    // With <all_urls> the browser would allow injecting anywhere, so that proves nothing.
+    permissions.hasOrigin.mockResolvedValue(false);
+    permissions.hasAllUrls.mockResolvedValue(true);
+    content.canAccess.mockResolvedValue(true);
+    expect(await assess('get_visible_text')).toMatchObject({
+      decision: 'approve',
+      kind: 'site_access',
+      origin: 'https://a.com',
+    });
   });
 
   it('asks for tab details when the address cannot be seen', async () => {
@@ -189,6 +203,21 @@ describe('internal pages', () => {
     }
     expect(api.navigateTab).not.toHaveBeenCalled();
     expect(api.createTab).not.toHaveBeenCalled();
+  });
+
+  it('will not navigate away from Dopilot’s own pages or internal pages', async () => {
+    for (const url of ['chrome-extension://abc/settings/index.html', 'chrome://settings/']) {
+      tabs[0] = tab(1, { url });
+      expect(await assess('navigate', { url: 'https://a.com' })).toMatchObject({
+        decision: 'block',
+        result: { code: 'restricted_page' },
+      });
+    }
+  });
+
+  it('can leave a blank new tab', async () => {
+    tabs[0] = tab(1, { url: 'chrome://newtab/' });
+    expect((await assess('navigate', { url: 'https://a.com' })).decision).toBe('allow');
   });
 
   it('refuses to reload an internal page, through the shared command code', async () => {

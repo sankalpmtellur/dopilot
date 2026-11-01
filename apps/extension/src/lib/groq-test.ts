@@ -1,4 +1,9 @@
-import { isToolModelCandidate, rankToolModels } from '@dopilot/shared';
+import {
+  isToolModelCandidate,
+  rankSpeechModels,
+  rankToolModels,
+  rankVisionModels,
+} from '@dopilot/shared';
 import type { GroqConnection, GroqModel } from '@dopilot/shared';
 import Groq from 'groq-sdk';
 
@@ -6,6 +11,8 @@ export interface GroqTestOutcome {
   connection: GroqConnection;
   /** Null when the test could not fetch a list. */
   models: GroqModel[] | null;
+  /** Discovered from the same request, so finding them costs nothing extra. */
+  other: { visionModels: GroqModel[]; speechModels: GroqModel[] } | null;
 }
 
 function readRetryAfter(error: InstanceType<typeof Groq.APIError>): number | undefined {
@@ -43,6 +50,7 @@ export async function testGroqKey(
       ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
     },
     models: null,
+    other: null,
   });
 
   try {
@@ -56,7 +64,17 @@ export async function testGroqKey(
           return { id: model.id, ...(contextWindow && { contextWindow }) };
         }),
     );
-    return { connection: { state: 'connected', checkedAt: now }, models };
+    const active = data
+      .filter((model) => (model as { active?: boolean }).active !== false)
+      .map((model) => ({ id: model.id }));
+    return {
+      connection: { state: 'connected', checkedAt: now },
+      models,
+      other: {
+        visionModels: rankVisionModels(active),
+        speechModels: rankSpeechModels(active),
+      },
+    };
   } catch (error) {
     if (error instanceof Groq.AuthenticationError) return failed('invalid_key');
     if (error instanceof Groq.PermissionDeniedError) return failed('forbidden');

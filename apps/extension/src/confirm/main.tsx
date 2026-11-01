@@ -1,4 +1,4 @@
-import { applyTheme, Brand, Button } from '@dopilot/ui';
+import { applyTheme, Brand, Button, ScreenshotPreview } from '@dopilot/ui';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { AgentApproval } from '@dopilot/shared';
@@ -7,6 +7,7 @@ import {
   decideConfirmation,
   getApproval,
   getConfirmationPrompt,
+  getScreenshotPreview,
 } from '@/lib/panel-client';
 import '@/styles/app.css';
 
@@ -45,6 +46,9 @@ function ApprovalPage({ approvalId }: { approvalId: string }) {
           {approval.title}
         </p>
         <p className="mt-1 text-[13px] text-muted">{approval.detail}</p>
+        {approval.screenshotId && (
+          <ScreenshotPreview id={approval.screenshotId} load={getScreenshotPreview} />
+        )}
       </div>
       <div className="flex gap-2">
         <Button onClick={() => void answerApproval(approval, false)}>Decline</Button>

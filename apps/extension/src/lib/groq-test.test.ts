@@ -39,6 +39,7 @@ describe('testGroqKey', () => {
     expect(outcome).toEqual({
       connection: { state: 'invalid_key', checkedAt: 1000 },
       models: null,
+      other: null,
     });
     expect(JSON.stringify(outcome)).not.toContain(KEY);
     expect(fetchStub).toHaveBeenCalledTimes(1);

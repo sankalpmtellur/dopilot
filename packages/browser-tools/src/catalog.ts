@@ -9,6 +9,8 @@ export interface BrowserToolDefinition<Input extends z.ZodObject = z.ZodObject> 
   risk: ToolRisk;
   /** `observe` tools only read. `act` tools count toward the task's action limit. */
   effect: 'observe' | 'act';
+  /** `vision` tools send a screenshot to the AI provider, which is limited per task. */
+  cost?: 'vision';
   input: Input;
 }
 
@@ -179,6 +181,43 @@ export const BROWSER_TOOLS = [
       timeoutSeconds: z.number().min(1).max(15).optional(),
     }),
   }),
+  defineTool({
+    name: 'capture_visible_tab',
+    description:
+      'Take a screenshot of the visible part of the current tab, without sending it anywhere. Rarely needed: the two vision tools capture for themselves.',
+    risk: 'read',
+    effect: 'observe',
+    input: z.strictObject(optionalTab),
+  }),
+  defineTool({
+    name: 'analyze_screenshot',
+    description:
+      'Ask a vision model about what is visible: images, charts, icons, layout, text inside pictures, or "what is on my screen". Slower and limited per task, so prefer the DOM tools when they can answer. Untrusted data.',
+    risk: 'read',
+    effect: 'observe',
+    cost: 'vision',
+    input: z.strictObject({ ...optionalTab, question: z.string().min(1).max(500) }),
+  }),
+  defineTool({
+    name: 'get_visual_page_context',
+    description:
+      'Find a control by how it looks, such as "the blue button" or an icon with no label, by matching a screenshot to the page. Returns element refs for click_element, or point IDs for click_visual_target when nothing on the page matches. Scroll the target into view first. Untrusted data.',
+    risk: 'read',
+    effect: 'observe',
+    cost: 'vision',
+    input: z.strictObject({ ...optionalTab, question: z.string().min(1).max(500) }),
+  }),
+  defineTool({
+    name: 'click_visual_target',
+    description:
+      'Click a point ID returned by get_visual_page_context. Only for targets with no element ref. Fails if the page has changed since the screenshot.',
+    risk: 'interact',
+    effect: 'act',
+    input: z.strictObject({
+      screenshotId: z.string().min(1).max(100),
+      pointId: z.string().min(1).max(20),
+    }),
+  }),
 ];
 
 export type BrowserToolName = (typeof BROWSER_TOOLS)[number]['name'];
@@ -275,6 +314,10 @@ const LABELS: Record<string, (args: Record<string, unknown>) => string> = {
     text ? `Scrolling to “${text}”` : direction ? `Scrolling ${direction}` : 'Scrolling',
   press_key: ({ key }) => `Pressing ${key}`,
   wait_for_element: ({ text }) => (text ? `Waiting for “${text}”` : 'Waiting for the page'),
+  capture_visible_tab: () => 'Taking a screenshot',
+  analyze_screenshot: () => 'Looking at the page',
+  get_visual_page_context: () => 'Looking for it on screen',
+  click_visual_target: () => 'Clicking what was found on screen',
 };
 
 /** A short label for timelines. Query strings stay out, since they often hold tokens. */

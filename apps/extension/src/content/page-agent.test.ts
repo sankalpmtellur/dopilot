@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { DescribeResult, ToolResult } from '@dopilot/shared';
+import type { DescribeResult, ToolResult, VisualSnapshot } from '@dopilot/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPageAgent } from './page-agent';
 
@@ -488,5 +488,100 @@ describe('facts for the safety policy', () => {
       data: DescribeResult;
     };
     expect(result.data.element?.name).toBe('Delete');
+  });
+});
+
+describe('visual snapshots', () => {
+  async function snapshot() {
+    const result = await agent.handle({ type: 'content.visual_snapshot', limit: 50 });
+    return (result as { data: VisualSnapshot }).data;
+  }
+
+  it('includes controls with no label, and their colour', async () => {
+    document.body.innerHTML = `
+      <button style="background-color: rgb(30, 90, 240)" aria-hidden="false"><svg></svg></button>
+      <button style="background-color: rgb(220, 30, 30)">Danger</button>
+    `;
+    const { elements } = await snapshot();
+    expect(elements).toHaveLength(2);
+    expect(elements[0]).toMatchObject({ name: '', role: 'button', color: 'blue' });
+    expect(elements[1]).toMatchObject({ name: 'Danger', color: 'red' });
+  });
+
+  it('reports secret fields and payment frames, to be painted over', async () => {
+    document.body.innerHTML = `
+      <input type="password" aria-label="Password" />
+      <input aria-label="Card number" />
+      <input aria-label="City" />
+      <iframe title="Secure payment input" src="about:blank"></iframe>
+      <iframe src="about:blank" title="Map"></iframe>
+    `;
+    const { secretBoxes, frameCount } = await snapshot();
+    expect(secretBoxes).toHaveLength(3);
+    expect(frameCount).toBe(2);
+  });
+
+  it('flags a CAPTCHA, and leaves it out of the targets', async () => {
+    document.body.innerHTML = '<div class="g-recaptcha"><button>Verify</button></div>';
+    const data = await snapshot();
+    expect(data.hasChallenge).toBe(true);
+    expect(data.elements).toHaveLength(0);
+  });
+
+  it('gives a different fingerprint when the controls change', async () => {
+    document.body.innerHTML = '<button>One</button>';
+    const first = (await snapshot()).viewport.fingerprint;
+    expect((await snapshot()).viewport.fingerprint).toBe(first);
+    document.body.innerHTML = '<button>Two</button>';
+    expect((await snapshot()).viewport.fingerprint).not.toBe(first);
+  });
+
+  it('keeps query strings out of the page state', async () => {
+    window.history.pushState({}, '', '/a?token=secret');
+    expect((await snapshot()).viewport.url).not.toContain('secret');
+    window.history.pushState({}, '', '/');
+  });
+});
+
+describe('grounding a point', () => {
+  const at = (element: Element | null) => {
+    document.elementFromPoint = () => element;
+  };
+  afterEach(() => {
+    delete (document as { elementFromPoint?: unknown }).elementFromPoint;
+  });
+  const ground = (x = 10, y = 10) => agent.handle({ type: 'content.ground_point', x, y });
+
+  it('finds the real control, including from an icon inside it', async () => {
+    document.body.innerHTML = '<button aria-label="Save"><span id="i"></span></button>';
+    at(document.querySelector('#i'));
+    expect(await ground()).toMatchObject({
+      data: { kind: 'element', interactive: true, ref: expect.any(String) },
+    });
+  });
+
+  it('marks non-controls, like a canvas, as such', async () => {
+    document.body.innerHTML = '<canvas id="c"></canvas>';
+    at(document.querySelector('#c'));
+    expect(await ground()).toMatchObject({ data: { kind: 'element', interactive: false } });
+  });
+
+  it('is honest about frames, and about empty space', async () => {
+    document.body.innerHTML = '<iframe></iframe>';
+    at(document.querySelector('iframe'));
+    expect(await ground()).toMatchObject({ data: { kind: 'frame' } });
+    at(document.body);
+    expect(await ground()).toMatchObject({ data: { kind: 'nothing' } });
+  });
+
+  it('clicks a canvas at the given coordinates', async () => {
+    document.body.innerHTML = '<canvas id="c" aria-label="Game"></canvas>';
+    const canvas = document.querySelector('#c') as HTMLCanvasElement;
+    const clicks: number[][] = [];
+    canvas.addEventListener('click', (event) => clicks.push([event.clientX, event.clientY]));
+    at(canvas);
+    const grounded = (await ground()) as { data: { ref: string } };
+    await agent.handle({ type: 'content.click_point', ref: grounded.data.ref, x: 42, y: 24 });
+    expect(clicks).toEqual([[42, 24]]);
   });
 });

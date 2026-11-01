@@ -119,6 +119,9 @@ export function toModelError(error: unknown): ModelError {
     ) {
       return new ModelError('model_unavailable', 'That model cannot be used for this.');
     }
+    if (/image|media|multimodal/i.test(message)) {
+      return new ModelError('image_rejected', 'Groq could not accept that image.');
+    }
     if (error.status && error.status < 500) {
       return new ModelError('server', 'Groq could not process that request.');
     }

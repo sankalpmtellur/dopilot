@@ -55,6 +55,10 @@ describe('API key store', () => {
       connection: { state: 'untested', checkedAt: null },
       models: [],
       selectedModel: null,
+      visionModels: [],
+      selectedVisionModel: null,
+      visionFallback: 'qwen/qwen3.8-27b',
+      speechModels: [],
     });
   });
 

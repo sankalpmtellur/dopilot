@@ -28,6 +28,10 @@ const REQUIRED = [
   'select_option',
   'press_key',
   'wait_for_element',
+  'capture_visible_tab',
+  'analyze_screenshot',
+  'get_visual_page_context',
+  'click_visual_target',
 ];
 
 describe('tool registry', () => {
@@ -56,7 +60,7 @@ describe('tool registry', () => {
 
   it('keeps definitions small, since they count against the quota on every request', () => {
     const size = JSON.stringify(toolSpecs().map((tool) => ({ type: 'function', function: tool })));
-    expect(size.length).toBeLessThan(5500);
+    expect(size.length).toBeLessThan(6500);
     expect(size).not.toContain('9007199254740991');
   });
 
@@ -86,6 +90,8 @@ describe('validateToolCall', () => {
     ['scroll with two targets', 'scroll_page', { direction: 'down', text: 'History' }],
     ['wait for nothing', 'wait_for_element', {}],
     ['very long wait', 'wait_for_element', { text: 'x', timeoutSeconds: 600 }],
+    ['raw coordinates from the model', 'click_visual_target', { x: 10, y: 20 }],
+    ['a question that is too long', 'analyze_screenshot', { question: 'x'.repeat(600) }],
   ])('rejects %s', (_label, name, args) => {
     expect(validateToolCall(name, args).ok).toBe(false);
   });

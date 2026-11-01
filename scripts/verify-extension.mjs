@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PROTOCOL_VERSION } from '../packages/shared/dist/index.js';
 import { verifyAgent } from './lib/agent-scenarios.mjs';
+import { verifyVoiceAndVision } from './lib/vision-scenarios.mjs';
 import { createChecks, createPageTools, launch, setScreenshotDir, sleep } from './lib/browser.mjs';
 
 const extensionPath = resolve(import.meta.dirname, '../apps/extension/dist');
@@ -611,8 +612,12 @@ for (const [name, executable] of Object.entries(browsers)) {
     console.log(`\n${name}: not installed, skipped`);
     continue;
   }
-  ok = (await verifyProduct(name, executable)) && ok;
-  ok = (await verifyTabDetails(name, executable)) && ok;
-  ok = (await verifyAgent(name, executable, extensionPath)) && ok;
+  // VERIFY_ONLY=vision runs just the voice and vision checks, while working on them.
+  if (process.env.VERIFY_ONLY !== 'vision') {
+    ok = (await verifyProduct(name, executable)) && ok;
+    ok = (await verifyTabDetails(name, executable)) && ok;
+    ok = (await verifyAgent(name, executable, extensionPath)) && ok;
+  }
+  ok = (await verifyVoiceAndVision(name, executable, extensionPath)) && ok;
 }
 process.exit(ok ? 0 : 1);

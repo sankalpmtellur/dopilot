@@ -11,9 +11,14 @@ import {
   groqShortLabel,
   groqTone,
   IconButton,
+  SpokenToggle,
   StatusPill,
   TabList,
   useCommandConsole,
+  useSpokenResponses,
+  useVoiceInput,
+  VoiceButton,
+  VoiceStatusLine,
 } from '@dopilot/ui';
 import type { ConsoleMessage } from '@dopilot/ui';
 import { ArrowLeft, ChevronRight, Plus, Settings } from 'lucide-react';
@@ -22,9 +27,11 @@ import type { ReactNode } from 'react';
 import {
   answerApproval,
   executeCommand,
+  getScreenshotPreview,
   resetConversation,
   startAgent,
   stopAgent,
+  transcribe,
 } from '@/lib/panel-client';
 import { SettingsForm } from '@/settings/settings-form';
 import { CONVERSATION_STORAGE_KEY, usePanelState } from './use-panel-state';
@@ -75,10 +82,20 @@ export function App() {
   const taskRunning = run !== null && isAgentActive(run.status);
   const { reportRun } = console_;
   useEffect(() => reportRun(run), [reportRun, run]);
+  const spoken = useSpokenResponses({ run, messages: console_.messages });
   const stopTask = () => {
     console_.stop();
+    spoken.interrupt();
     void stopAgent().then(refresh);
   };
+  const voice = useVoiceInput({
+    choice: state?.preferences.voiceEngine ?? 'auto',
+    groqAllowed: state?.preferences.speechFallback ?? false,
+    transcribe,
+    onTranscript: console_.submit,
+    onStopCommand: stopTask,
+    onListeningStart: spoken.interrupt,
+  });
 
   if (showSettings) {
     return (
@@ -194,6 +211,7 @@ export function App() {
             onAnswerApproval={(approval, approved) => {
               void answerApproval(approval, approved).then(refresh);
             }}
+            loadScreenshot={getScreenshotPreview}
           />
         )}
         {console_.confirmation && (
@@ -203,7 +221,18 @@ export function App() {
             onDecline={console_.decline}
           />
         )}
+        <VoiceStatusLine voice={voice} onOpenSettings={() => setShowSettings(true)} />
         <CommandComposer
+          voiceControls={
+            <>
+              <VoiceButton voice={voice} />
+              <SpokenToggle
+                enabled={spoken.enabled}
+                onChange={spoken.setEnabled}
+                available={spoken.available}
+              />
+            </>
+          }
           onSubmit={console_.submit}
           canStop={console_.busy || taskRunning}
           onStop={stopTask}

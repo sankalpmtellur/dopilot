@@ -6,6 +6,7 @@ import {
   TabInfoSchema,
 } from './commands.js';
 import { GroqStatusSchema } from './groq.js';
+import { AudioPayloadSchema, PreferencesSchema } from './voice.js';
 import { z } from 'zod';
 
 export const PROTOCOL_VERSION = 2;
@@ -21,6 +22,7 @@ export const ExtensionStateSchema = z.strictObject({
   currentTabId: z.number().int().nonnegative().nullable(),
   groq: GroqStatusSchema,
   agent: AgentRunViewSchema.nullable(),
+  preferences: PreferencesSchema,
   recentActions: z.array(ActionLogEntrySchema),
 });
 export type ExtensionState = z.infer<typeof ExtensionStateSchema>;
@@ -50,6 +52,7 @@ export const ExternalRequestSchema = z.discriminatedUnion('type', [
   }),
   z.strictObject({ ...request, type: z.literal('external.agent_stop') }),
   z.strictObject({ ...request, type: z.literal('external.agent_reset') }),
+  z.strictObject({ ...request, type: z.literal('external.transcribe'), ...AudioPayloadSchema }),
 ]);
 export type ExternalRequest = z.infer<typeof ExternalRequestSchema>;
 
@@ -71,6 +74,12 @@ export const ExternalResponseSchema = z.discriminatedUnion('type', [
   z.strictObject({
     ...response,
     type: z.literal('external.agent_started'),
+    error: z.string().nullable(),
+  }),
+  z.strictObject({
+    ...response,
+    type: z.literal('external.transcription'),
+    text: z.string().nullable(),
     error: z.string().nullable(),
   }),
   z.strictObject({
@@ -107,6 +116,8 @@ export const PanelRequestSchema = z.discriminatedUnion('type', [
   }),
   z.strictObject({ ...envelope, type: z.literal('panel.get_approval'), id: z.string().min(1) }),
   z.strictObject({ ...envelope, type: z.literal('panel.reset_conversation') }),
+  z.strictObject({ ...envelope, type: z.literal('panel.transcribe'), ...AudioPayloadSchema }),
+  z.strictObject({ ...envelope, type: z.literal('panel.get_screenshot'), id: z.string().min(1) }),
   z.strictObject({ ...envelope, type: z.literal('panel.mcp_status') }),
   z.strictObject({
     ...envelope,
@@ -142,6 +153,17 @@ export const PanelResponseSchema = z.discriminatedUnion('type', [
     ...envelope,
     type: z.literal('panel.agent_started'),
     error: z.string().nullable(),
+  }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.transcription'),
+    text: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.screenshot'),
+    dataUrl: z.string().nullable(),
   }),
   z.strictObject({
     ...envelope,

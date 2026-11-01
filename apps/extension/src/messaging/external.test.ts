@@ -18,8 +18,13 @@ const state: ExtensionState = {
     connection: { state: 'untested', checkedAt: null },
     models: [],
     selectedModel: null,
+    visionModels: [],
+    selectedVisionModel: null,
+    visionFallback: 'qwen/qwen3.8-27b',
+    speechModels: [],
   },
   agent: null,
+  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto' },
   recentActions: [],
 };
 
@@ -33,6 +38,7 @@ function setup(overrides: Partial<ExternalDeps> = {}) {
     startAgent: vi.fn(async () => null),
     stopAgent: vi.fn(async () => undefined),
     resetAgent: vi.fn(async () => undefined),
+    transcribe: vi.fn(async () => ({ text: 'open youtube', error: null })),
     ...overrides,
   };
   return { deps, handle: createExternalHandler(deps) };
@@ -155,6 +161,45 @@ describe('agent control from the website', () => {
     const limited = await handle(start('b'), { origin: ORIGIN });
     expect(limited).toMatchObject({ error: expect.stringMatching(/too many/i) });
     expect(deps.startAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('voice and vision from the website', () => {
+  it('can have speech transcribed, subject to the same checks', async () => {
+    const { handle, deps } = setup();
+    const speech = message('external.transcribe', { audio: 'AAAA', mimeType: 'audio/webm' });
+    expect(await handle(speech, { origin: ORIGIN })).toMatchObject({
+      type: 'external.transcription',
+      text: 'open youtube',
+    });
+    await handle(speech, { origin: 'https://evil.example' });
+    expect(deps.transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses oversized audio and unknown formats', async () => {
+    const { handle, deps } = setup();
+    for (const extra of [
+      { audio: 'A'.repeat(600000), mimeType: 'audio/webm' },
+      { audio: 'AAAA', mimeType: 'text/html' },
+    ]) {
+      expect(await handle(message('external.transcribe', extra), { origin: ORIGIN })).toMatchObject(
+        {
+          reason: 'invalid_message',
+        },
+      );
+    }
+    expect(deps.transcribe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['read a screenshot', 'panel.get_screenshot', { id: 's1' }],
+    ['ask for one by another name', 'external.get_screenshot', { id: 's1' }],
+    ['change settings', 'external.set_preferences', { speechFallback: true }],
+  ])('cannot %s', async (_label, type, extra) => {
+    const { handle } = setup();
+    expect(await handle(message(type, extra), { origin: ORIGIN })).toMatchObject({
+      reason: 'invalid_message',
+    });
   });
 });
 

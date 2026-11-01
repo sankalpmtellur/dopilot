@@ -15,7 +15,11 @@ import { chromeContentPort } from '@/lib/content-client';
 import { createGroqModelClient } from '@/lib/groq-client';
 import { testGroqKey } from '@/lib/groq-test';
 import { createMcpBridge } from '@/lib/mcp-bridge';
+import { loadPreferences } from '@/lib/preferences';
+import { browserImagePort } from '@/lib/screenshot-image';
+import { hasAllSitesPermission, isSiteAuthorized } from '@/lib/site-access';
 import { createToolService } from '@/lib/tool-service';
+import { CaptureAccessError, createVisionService } from '@/lib/vision-service';
 import { hasTabDetails } from '@/permissions/tab-details';
 
 const RUN_KEY = 'agentRun';
@@ -44,12 +48,40 @@ const store: RunStore = {
   },
 };
 
+async function captureTab(windowId: number): Promise<string> {
+  try {
+    return await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 80 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (/permission|activeTab|all_urls/i.test(message)) throw new CaptureAccessError();
+    throw error;
+  }
+}
+
+async function modelClient() {
+  const apiKey = await loadApiKey();
+  if (!apiKey) throw new Error('No API key');
+  return createGroqModelClient(apiKey);
+}
+
+export const vision = createVisionService({
+  api: chromeBrowserApi,
+  content: chromeContentPort,
+  capture: captureTab,
+  image: browserImagePort,
+  loadPreferences,
+  loadGroqStatus,
+  model: modelClient,
+});
+
 const service = createToolService({
+  vision,
   api: chromeBrowserApi,
   content: chromeContentPort,
   permissions: {
     hasTabDetails,
-    hasOrigin: (origin) => chrome.permissions.contains({ origins: [`${origin}/*`] }),
+    hasOrigin: isSiteAuthorized,
+    hasAllUrls: hasAllSitesPermission,
   },
 });
 
@@ -65,7 +97,7 @@ async function chooseModel(tried: string[]): Promise<string | null> {
     const apiKey = await loadApiKey();
     if (!apiKey) return null;
     const outcome = await testGroqKey(apiKey);
-    await recordConnectionTest(outcome.connection, outcome.models);
+    await recordConnectionTest(outcome.connection, outcome.models, outcome.other);
     status = await loadGroqStatus();
   }
   return rankToolModels(status.models).find((model) => !tried.includes(model.id))?.id ?? null;
@@ -108,8 +140,8 @@ async function presentApproval(approval: AgentApproval | null): Promise<void> {
   const created = await chrome.windows.create({
     url: chrome.runtime.getURL(`confirm/index.html?approval=${encodeURIComponent(approval.id)}`),
     type: 'popup',
-    width: 440,
-    height: 280,
+    width: 480,
+    height: approval.screenshotId ? 520 : 300,
   });
   if (created?.id !== undefined) approvalWindow = { id: created.id, approvalId: approval.id };
 }
@@ -118,12 +150,12 @@ export const agentRunner = new AgentRunner({
   store,
   toolbox: service.toolbox,
   chooseModel,
-  model: async () => {
-    const apiKey = await loadApiKey();
-    if (!apiKey) throw new Error('No API key');
-    return createGroqModelClient(apiKey);
+  model: modelClient,
+  onChange: (run) => {
+    updateKeepAlive(run);
+    // Screenshots last no longer than the task that needed them.
+    if (!isAgentActive(run.status)) vision.clear();
   },
-  onChange: updateKeepAlive,
   onApproval: (approval) => void presentApproval(approval).catch(() => undefined),
   onModelProblem: (kind, model) => {
     if (kind === 'invalid_key' || kind === 'forbidden') void markKeyRejected(kind);

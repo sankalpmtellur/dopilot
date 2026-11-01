@@ -843,3 +843,96 @@ describe('service worker interruption', () => {
     expect(after.requests).toHaveLength(0);
   });
 });
+
+describe('vision in the agent loop', () => {
+  it('uses the same loop for visual steps, then acts on the result', async () => {
+    const { runner, store, execute } = setup({
+      script: [
+        tools(call('get_visual_page_context', { question: 'the blue button' })),
+        tools(call('click_element', { ref: 'ab.3' })),
+        done('Clicked the blue button.'),
+      ],
+    });
+    await runner.start('Click the blue button', 'panel');
+    await runner.idle();
+
+    expect(execute.mock.calls.map((args) => args[0])).toEqual([
+      'get_visual_page_context',
+      'click_element',
+    ]);
+    expect(store.run?.timeline[0]?.kind).toBe('vision');
+    expect(store.run?.status).toBe('completed');
+  });
+
+  it('caps screenshots per task, and tells the model to carry on without them', async () => {
+    const shots = Array.from({ length: 7 }, (_, index) =>
+      tools(call('analyze_screenshot', { question: `q${index}` })),
+    );
+    const { runner, execute, requests } = setup({
+      script: [...shots, done('Used the DOM instead.')],
+    });
+    await runner.start('x', 'panel');
+    await runner.idle();
+
+    expect(execute).toHaveBeenCalledTimes(DEFAULT_EXECUTION_LIMITS.maxVisionCalls);
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain('vision_limit');
+  });
+
+  it('aborts vision work in progress when stopped, and runs nothing further', async () => {
+    let aborted = false;
+    let started = false;
+    const context = setup({
+      script: [
+        tools(call('analyze_screenshot', { question: 'q' }), call('click_element', { ref: 'a.1' })),
+      ],
+      execute: (_name, _args) =>
+        new Promise<ToolResult>((resolve) => {
+          started = true;
+          const signal = (
+            context.execute.mock.lastCall as unknown as [string, object, { signal: AbortSignal }]
+          )[2].signal;
+          signal.addEventListener('abort', () => {
+            aborted = true;
+            resolve({ ok: false, code: 'cancelled', message: 'Cancelled', recoverable: false });
+          });
+        }),
+    });
+    await context.runner.start('x', 'panel');
+    await vi.waitFor(() => expect(started).toBe(true));
+    await context.runner.stop();
+    await context.runner.idle();
+
+    expect(aborted).toBe(true);
+    expect(context.execute).toHaveBeenCalledTimes(1);
+    expect(context.store.run?.status).toBe('cancelled');
+  });
+
+  it('marks answers built from page content, so they are not read aloud', async () => {
+    const reading = setup({ script: [tools(call('get_visible_text')), done('It says hello.')] });
+    await reading.runner.start('read this', 'panel');
+    await reading.runner.idle();
+    expect(reading.store.run?.readPageContent).toBe(true);
+
+    const acting = setup({ script: [tools(call('open_tab')), done('Opened.')] });
+    await acting.runner.start('open a tab', 'panel');
+    await acting.runner.idle();
+    expect(acting.store.run?.readPageContent).toBe(false);
+  });
+
+  it('passes the screenshot awaiting approval through to the prompt', async () => {
+    const { runner, store } = setup({
+      script: [tools(call('analyze_screenshot', { question: 'q' }))],
+      assess: async () => ({
+        decision: 'approve',
+        kind: 'screenshot',
+        title: 'Send a screenshot to Groq?',
+        detail: 'Processed by Groq.',
+        key: 'screenshot:a',
+        screenshotId: 's1',
+      }),
+    });
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(store.run?.approval).toMatchObject({ kind: 'screenshot', screenshotId: 's1' });
+  });
+});

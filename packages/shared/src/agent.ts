@@ -80,18 +80,20 @@ export function isAgentActive(status: AgentRunStatus): boolean {
 export const AgentApprovalSchema = z.strictObject({
   id: z.string().min(1),
   /** `action` confirms one tool call. The others grant a browser permission first. */
-  kind: z.enum(['action', 'site_access', 'tab_details']),
+  kind: z.enum(['action', 'site_access', 'tab_details', 'screenshot', 'screenshot_access']),
   title: z.string(),
   detail: z.string(),
   /** Exact origin to request, for `site_access`. */
   origin: z.string().optional(),
+  /** The screenshot awaiting approval. Extension pages can show it. Websites cannot. */
+  screenshotId: z.string().optional(),
 });
 export type AgentApproval = z.infer<typeof AgentApprovalSchema>;
 
 export const AgentTimelineEntrySchema = z.strictObject({
   id: z.string().min(1),
   at: z.number(),
-  kind: z.enum(['observe', 'act', 'approval', 'retry', 'error']),
+  kind: z.enum(['observe', 'vision', 'act', 'approval', 'retry', 'error']),
   status: z.enum(['running', 'done', 'failed', 'skipped']),
   label: z.string(),
   detail: z.string().optional(),
@@ -113,6 +115,8 @@ export const AgentRunViewSchema = z.strictObject({
   startedAt: z.number(),
   finishedAt: z.number().nullable(),
   actionCount: z.number().int().nonnegative(),
+  /** The answer may contain page content, so it should not be read aloud automatically. */
+  readPageContent: z.boolean(),
   maxActions: z.number().int().positive(),
   timeline: z.array(AgentTimelineEntrySchema),
   approval: AgentApprovalSchema.nullable(),

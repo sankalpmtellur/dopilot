@@ -23,6 +23,11 @@ export interface InternalDeps {
   getApproval(id: string): Promise<AgentApproval | null>;
   mcpStatus(): { enabled: boolean; connected: boolean };
   mcpConfigure(token: string | null): Promise<void>;
+  transcribe(
+    audio: string,
+    mimeType: 'audio/webm' | 'audio/ogg' | 'audio/mp4',
+  ): Promise<{ text: string | null; error: string | null }>;
+  getScreenshot(id: string): string | null;
 }
 
 /** Handles messages from extension pages. Returns null for anything else. */
@@ -76,6 +81,14 @@ export async function handleInternalMessage(
       return { ...base, type: 'panel.ack' };
     case 'panel.get_approval':
       return { ...base, type: 'panel.approval', approval: await deps.getApproval(request.id) };
+    case 'panel.transcribe':
+      return {
+        ...base,
+        type: 'panel.transcription',
+        ...(await deps.transcribe(request.audio, request.mimeType)),
+      };
+    case 'panel.get_screenshot':
+      return { ...base, type: 'panel.screenshot', dataUrl: deps.getScreenshot(request.id) };
     case 'panel.mcp_status':
       return { ...base, type: 'panel.mcp_status', ...deps.mcpStatus() };
     case 'panel.mcp_configure':

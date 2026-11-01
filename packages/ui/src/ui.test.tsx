@@ -132,9 +132,9 @@ describe('command console', () => {
     );
   });
 
-  it('keeps the microphone disabled', () => {
+  it('shows a disabled microphone if a surface offers no voice', () => {
     render(<Harness execute={vi.fn()} />);
-    const mic = screen.getByRole('button', { name: /voice input, coming soon/i });
+    const mic = screen.getByRole('button', { name: /voice input is not available/i });
     expect((mic as HTMLButtonElement).disabled).toBe(true);
   });
 });
@@ -193,6 +193,7 @@ const baseRun: AgentRunView = {
   startedAt: 0,
   finishedAt: null,
   actionCount: 2,
+  readPageContent: false,
   maxActions: 15,
   timeline: [
     {
@@ -251,6 +252,46 @@ describe('handing tasks to the agent', () => {
   });
 });
 
+describe('AgentPanel vision', () => {
+  const looking: AgentRunView = {
+    ...baseRun,
+    status: 'observing',
+    timeline: [{ id: 'v', at: 0, kind: 'vision', status: 'running', label: 'Looking at the page' }],
+  };
+  const consent = {
+    id: 'a',
+    kind: 'screenshot' as const,
+    title: 'Send a screenshot of a.com to Groq?',
+    detail: 'Groq will process this image.',
+    screenshotId: 's1',
+  };
+  const waiting: AgentRunView = { ...baseRun, status: 'waiting_for_approval', approval: consent };
+
+  it('says clearly when a screenshot is being used', () => {
+    render(<AgentPanel run={looking} onStop={vi.fn()} />);
+    expect(screen.getByText(/looking at this page, using a screenshot/i)).toBeTruthy();
+  });
+
+  it('previews what will be sent, in extension pages', async () => {
+    const load = vi.fn(async () => 'data:image/jpeg;base64,/9j/');
+    render(
+      <AgentPanel
+        run={waiting}
+        onStop={vi.fn()}
+        loadScreenshot={load}
+        onAnswerApproval={vi.fn()}
+      />,
+    );
+    expect(await screen.findByAltText('The screenshot that would be sent')).toBeTruthy();
+    expect(load).toHaveBeenCalledWith('s1');
+  });
+
+  it('shows no image on the website', () => {
+    render(<AgentPanel run={waiting} onStop={vi.fn()} />);
+    expect(screen.queryByRole('img')).toBeNull();
+  });
+});
+
 describe('AgentPanel', () => {
   it.each([
     ['thinking', 'Thinking'],
@@ -295,6 +336,12 @@ describe('AgentPanel', () => {
     detail: 'This deletes something.',
   };
   const waiting = { ...baseRun, status: 'waiting_for_approval' as const, approval };
+
+  it('keeps the prompt in view by holding back the steps while waiting', () => {
+    render(<AgentPanel run={waiting} onStop={vi.fn()} onAnswerApproval={vi.fn()} />);
+    expect(screen.queryByText('Opening https://wikipedia.org')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Stop task' })).toBeTruthy();
+  });
 
   it('lets extension pages answer an approval', async () => {
     const onAnswer = vi.fn();

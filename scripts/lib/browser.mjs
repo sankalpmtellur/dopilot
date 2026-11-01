@@ -14,13 +14,15 @@ export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
  * `blockNetwork` routes everything except local addresses to a closed port, so nothing
  * in a run can reach the internet, even if interception were to miss a request.
  */
-export function launch(executable, { blockNetwork = false } = {}) {
+export function launch(executable, { blockNetwork = false, fakeMic = false } = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'dopilot-verify-'));
   const child = spawn(
     executable,
     [
       ...(process.env.VERIFY_HEADED ? [] : ['--headless=new']),
       ...(blockNetwork ? ['--proxy-server=127.0.0.1:9'] : []),
+      // A real microphone pipeline with a synthetic device, and no permission dialog.
+      ...(fakeMic ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] : []),
       '--remote-debugging-pipe',
       '--enable-unsafe-extension-debugging',
       '--no-first-run',
@@ -137,7 +139,7 @@ export function createPageTools(browser) {
     return null;
   }
 
-  const clickButton = (page, label) =>
+  const clickButton = (page, label, options = {}) =>
     evaluate(
       page,
       `(() => {
@@ -148,6 +150,7 @@ export function createPageTools(browser) {
         if (button) button.click();
         return Boolean(button);
       })()`,
+      options,
     );
 
   // Uses the native setter so React sees the change, as it would from real typing.

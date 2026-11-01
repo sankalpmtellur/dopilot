@@ -29,6 +29,7 @@ export interface AgentRun extends AgentRunView {
   recentCalls: string[];
   modelCalls: number;
   consecutiveFailures: number;
+  visionCalls: number;
   rateLimitWaits: number;
   resumes: number;
   triedModels: string[];
@@ -59,6 +60,7 @@ export type ToolAssessment =
       title: string;
       detail: string;
       origin?: string;
+      screenshotId?: string;
       /** Identifies what is being approved, so a changed page needs fresh approval. */
       key: string;
     }
@@ -111,6 +113,19 @@ const MAX_CALLS_PER_RESPONSE = 5;
 const MAX_SUMMARY_CHARS = 4000;
 const MAX_DETAIL_CHARS = 240;
 const RETRY_BACKOFF_MS = 1000;
+const VISUAL_TOOLS = new Set([
+  'capture_visible_tab',
+  'analyze_screenshot',
+  'get_visual_page_context',
+  'click_visual_target',
+]);
+/** Answers built on these may repeat page content, including whatever a screenshot showed. */
+const CONTENT_TOOLS = new Set([
+  'get_page_content',
+  'get_visible_text',
+  'analyze_screenshot',
+  'get_visual_page_context',
+]);
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -137,6 +152,7 @@ export function toRunView(run: AgentRun): AgentRunView {
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     actionCount: run.actionCount,
+    readPageContent: run.readPageContent,
     maxActions: run.maxActions,
     timeline: run.timeline,
     approval: run.approval,
@@ -198,6 +214,8 @@ export class AgentRunner {
       startedAt: this.now(),
       finishedAt: null,
       actionCount: 0,
+      readPageContent: false,
+      visionCalls: 0,
       maxActions: this.limits.maxActions,
       timeline: [],
       approval: null,
@@ -542,6 +560,21 @@ export class AgentRunner {
       return;
     }
 
+    if (tool.cost === 'vision' && run.visionCalls >= this.limits.maxVisionCalls) {
+      this.addEntry(run, 'error', 'failed', label, 'Screenshot limit reached for this task.');
+      this.completeCall(
+        run,
+        call,
+        toolFailure(
+          'vision_limit',
+          `This task has used its ${this.limits.maxVisionCalls} screenshots, to protect the user's free quota. Continue with the DOM tools, or explain what you found.`,
+          false,
+        ),
+        false,
+      );
+      return;
+    }
+
     if (assessment.decision === 'approve' && assessment.key !== run.approvedKey) {
       this.pauseForApproval(run, assessment);
       return;
@@ -549,7 +582,13 @@ export class AgentRunner {
     run.approvedKey = null;
 
     run.status = tool.effect === 'act' ? 'executing' : 'observing';
-    const entry = this.addEntry(run, tool.effect === 'act' ? 'act' : 'observe', 'running', label);
+    const entryKind = VISUAL_TOOLS.has(tool.name)
+      ? 'vision'
+      : tool.effect === 'act'
+        ? 'act'
+        : 'observe';
+    const entry = this.addEntry(run, entryKind, 'running', label);
+    if (tool.cost === 'vision') run.visionCalls += 1;
     if (tool.effect === 'act') run.actionCount += 1;
     run.inflightCallId = call.id;
     await this.persist();
@@ -567,6 +606,7 @@ export class AgentRunner {
     }
 
     entry.status = result.ok ? 'done' : 'failed';
+    if (result.ok && CONTENT_TOOLS.has(tool.name)) run.readPageContent = true;
     entry.detail = this.resultDetail(result);
     if (result.ok && result.currentTabId !== undefined) run.currentTabId = result.currentTabId;
 
@@ -605,6 +645,7 @@ export class AgentRunner {
       title: assessment.title,
       detail: assessment.detail,
       ...(assessment.origin && { origin: assessment.origin }),
+      ...(assessment.screenshotId && { screenshotId: assessment.screenshotId }),
     };
     run.approval = approval;
     run.approvalKey = assessment.key;

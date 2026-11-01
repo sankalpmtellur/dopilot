@@ -8,6 +8,7 @@ import type {
   PanelRequest,
   PanelResponse,
 } from '@dopilot/shared';
+import { addAuthorizedSite, rememberGrantedSites } from './site-access';
 
 type RequestBody = PanelRequest extends infer R
   ? R extends PanelRequest
@@ -75,10 +76,30 @@ export async function answerApproval(approval: AgentApproval, approved: boolean)
   let granted = approved;
   if (approved && approval.kind === 'site_access' && approval.origin) {
     granted = await chrome.permissions.request({ origins: [`${approval.origin}/*`] });
+    if (granted) await addAuthorizedSite(approval.origin);
+  } else if (approved && approval.kind === 'screenshot_access') {
+    await rememberGrantedSites();
+    granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
   } else if (approved && approval.kind === 'tab_details') {
     granted = await chrome.permissions.request({ permissions: ['tabs'] });
   }
   await resolveApproval(approval.id, granted);
+}
+
+/** Only extension pages can ask for this. Screenshots are never sent to the website. */
+export async function getScreenshotPreview(id: string): Promise<string | null> {
+  const response = await send({ type: 'panel.get_screenshot', id });
+  return response.type === 'panel.screenshot' ? response.dataUrl : unexpected();
+}
+
+export async function transcribe(
+  audio: string,
+  mimeType: 'audio/webm' | 'audio/ogg' | 'audio/mp4',
+): Promise<{ text: string | null; error: string | null }> {
+  const response = await send({ type: 'panel.transcribe', audio, mimeType });
+  return response.type === 'panel.transcription'
+    ? { text: response.text, error: response.error }
+    : unexpected();
 }
 
 export async function getMcpStatus(): Promise<{ enabled: boolean; connected: boolean }> {

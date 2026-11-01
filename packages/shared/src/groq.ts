@@ -31,6 +31,11 @@ export const GroqStatusSchema = z.strictObject({
   connection: GroqConnectionSchema,
   models: z.array(GroqModelSchema),
   selectedModel: z.string().nullable(),
+  visionModels: z.array(GroqModelSchema),
+  selectedVisionModel: z.string().nullable(),
+  /** Tried when no vision model can be discovered. Users can change it as models come and go. */
+  visionFallback: z.string(),
+  speechModels: z.array(GroqModelSchema),
 });
 export type GroqStatus = z.infer<typeof GroqStatusSchema>;
 

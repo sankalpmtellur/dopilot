@@ -9,6 +9,7 @@ import {
   listTabs,
 } from '@/lib/browser-commands';
 import { ConfirmationManager } from '@/lib/confirmations';
+import { loadPreferences } from '@/lib/preferences';
 import { hasTabDetails } from '@/permissions/tab-details';
 import { agentRunner } from './agent-host';
 
@@ -31,14 +32,16 @@ export async function buildState(
   source: CommandSource,
   senderTabId?: number,
 ): Promise<ExtensionState> {
-  const [tabDetailsAvailable, tabs, currentTabId, groq, recentActions, agent] = await Promise.all([
-    hasTabDetails(),
-    listTabs(chromeBrowserApi),
-    findCurrentTabId(chromeBrowserApi, source, senderTabId),
-    loadGroqStatus(),
-    loadActionLog(),
-    agentRunner.view(),
-  ]);
+  const [tabDetailsAvailable, tabs, currentTabId, groq, recentActions, agent, preferences] =
+    await Promise.all([
+      hasTabDetails(),
+      listTabs(chromeBrowserApi),
+      findCurrentTabId(chromeBrowserApi, source, senderTabId),
+      loadGroqStatus(),
+      loadActionLog(),
+      agentRunner.view(),
+      loadPreferences(),
+    ]);
   return {
     extensionVersion: chrome.runtime.getManifest().version,
     tabDetailsAvailable,
@@ -46,6 +49,7 @@ export async function buildState(
     currentTabId,
     groq,
     agent,
+    preferences,
     recentActions,
   };
 }

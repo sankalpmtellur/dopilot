@@ -4,7 +4,7 @@ Open-source, voice-controlled AI browser agent for Chrome and Brave. Users bring
 their own Groq API key.
 
 > **Status:** the AI agent works: tell it what to do and it observes pages, acts through
-> validated tools, and asks before anything sensitive. Voice and vision are not built yet.
+> validated tools, understands speech and screenshots, and asks before anything sensitive.
 
 ## Requirements
 
@@ -52,6 +52,16 @@ CAPTCHAs or submit graded quizzes. Choose a model in Settings, or leave it on Au
 Exact commands run instantly, without AI or a key. Type `help` to list them: `new tab`,
 `open <address>`, `list tabs`, `switch to tab <n>`, `reload`, `go back`, `go forward`, `close tab`,
 `close tab <n>`.
+
+## Voice and vision
+
+Press the microphone to speak: hold to talk, or tap to start and again to finish. Say "stop" to stop a
+task. Chrome's speech service is used when it works. Brave has none, so turn on **Allow sending my voice
+to Groq** in Settings. Short spoken replies can be turned on with the speaker button.
+
+Ask things like `What is on my screen?` or `Click the blue button`. Dopilot reads the page first and
+only uses a screenshot when it has to. It shows you the image, with password and card fields hidden, and
+asks before sending it to Groq. Screenshots are not saved, and never go to Dopilot's backend.
 
 ## MCP (local development)
 

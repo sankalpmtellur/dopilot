@@ -7,6 +7,8 @@ export interface ExecutionLimits {
   maxIdenticalCalls: number;
   /** The same call this many times among recent calls catches A-B-A-B loops. */
   maxRepeatsInWindow: number;
+  /** Screenshots sent for analysis per task. Each one costs far more than a page read. */
+  maxVisionCalls: number;
   /** A hard ceiling on Groq requests, to protect the user's quota. */
   maxModelCalls: number;
   /**
@@ -26,6 +28,7 @@ export const DEFAULT_EXECUTION_LIMITS: ExecutionLimits = {
   maxConsecutiveFailures: 3,
   maxIdenticalCalls: 3,
   maxRepeatsInWindow: 4,
+  maxVisionCalls: 5,
   maxModelCalls: 30,
   maxRateLimitWaits: 3,
   maxRateLimitWaitMs: 60_000,

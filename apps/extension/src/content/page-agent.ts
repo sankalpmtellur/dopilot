@@ -3,9 +3,12 @@ import type {
   ContentRequest,
   DescribeResult,
   ElementFacts,
+  GroundedPoint,
   PageFacts,
   PressableKey,
   ToolResult,
+  ViewportState,
+  VisualSnapshot,
 } from '@dopilot/shared';
 
 const INTERACTIVE_SELECTOR = [
@@ -45,6 +48,8 @@ const CHALLENGE_TEXT = /\b(i'?m not a robot|verify you are human|captcha)\b/i;
 const SECRET_AUTOCOMPLETE = /(password|cc-|one-time-code|webauthn)/i;
 const SECRET_NAME =
   /\b(pass(word|code|phrase)?|pwd|otp|cvv|cvc|card ?(number|no)|security code|ssn|social security|api[ _-]?key|secret|token|pin)\b/i;
+
+const PAYMENT_FRAME = /stripe|paypal|braintree|adyen|checkout|payment|card|klarna|square/i;
 
 const NAME_LIMIT = 120;
 const ACTION_SETTLE_MS = 500;
@@ -812,6 +817,169 @@ export function createPageAgent(options: PageAgentOptions = {}) {
     });
   }
 
+  function colorName(element: Element): string | undefined {
+    const style = getComputedStyle(element);
+    const parse = (value: string) => {
+      const match = /rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)(?:[,/ ]+([\d.]+))?/.exec(value);
+      if (!match) return null;
+      const alpha = match[4] === undefined ? 1 : Number(match[4]);
+      return alpha < 0.3 ? null : [Number(match[1]), Number(match[2]), Number(match[3])];
+    };
+    const rgb = parse(style.backgroundColor) ?? parse(style.fill) ?? parse(style.color);
+    if (!rgb) return undefined;
+    const [r = 0, g = 0, b = 0] = rgb;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    if (max < 50) return 'black';
+    if (min > 215) return 'white';
+    if (max - min < 25) return 'gray';
+    const delta = max - min;
+    const hue =
+      max === r
+        ? (((g - b) / delta) % 6) * 60
+        : max === g
+          ? ((b - r) / delta + 2) * 60
+          : ((r - g) / delta + 4) * 60;
+    const angle = (hue + 360) % 360;
+    if (angle < 15 || angle >= 345) return 'red';
+    if (angle < 45) return 'orange';
+    if (angle < 70) return 'yellow';
+    if (angle < 165) return 'green';
+    if (angle < 200) return 'cyan';
+    if (angle < 260) return 'blue';
+    if (angle < 300) return 'purple';
+    return 'pink';
+  }
+
+  function boxOf(element: Element): [number, number, number, number] {
+    const { left, top, width, height } = element.getBoundingClientRect();
+    return [Math.round(left), Math.round(top), Math.round(width), Math.round(height)];
+  }
+
+  function onScreen(element: Element): boolean {
+    const { top, bottom, left, right, width, height } = element.getBoundingClientRect();
+    // Zero-size boxes have already been judged by the visibility check.
+    if (width === 0 && height === 0) return true;
+    return bottom > 0 && right > 0 && top < window.innerHeight && left < window.innerWidth;
+  }
+
+  function visibleControls(): Element[] {
+    return [...walk(document)].filter(
+      (element) =>
+        element.matches(INTERACTIVE_SELECTOR) &&
+        isVisible(element) &&
+        onScreen(element) &&
+        !isChallengeElement(element),
+    );
+  }
+
+  function viewportState(): ViewportState {
+    const signature = visibleControls()
+      .map((element) => {
+        const [x, y, w, h] = boxOf(element);
+        const grid = (value: number) => Math.round(value / 8);
+        return `${roleOf(element)}|${labelFor(element)}|${grid(x)},${grid(y)},${grid(w)},${grid(h)}`;
+      })
+      .join(';');
+    let hash = 0;
+    for (let index = 0; index < signature.length; index += 1) {
+      hash = (Math.imul(hash, 31) + signature.charCodeAt(index)) | 0;
+    }
+    return {
+      url: location.href.split(/[?#]/, 1)[0] ?? '',
+      title: clean(document.title, 200),
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+      dpr: window.devicePixelRatio || 1,
+      fingerprint: hash.toString(36),
+    };
+  }
+
+  /**
+   * Everything needed to photograph a page safely and tie what a model sees back to real
+   * elements. Secret fields are reported so they can be painted over. So are frames that
+   * look like payment forms, because their contents cannot be inspected from here.
+   */
+  function visualSnapshot(limit: number): VisualSnapshot {
+    const elements = visibleControls()
+      .slice(0, limit)
+      .map((element) => {
+        const color = colorName(element);
+        return {
+          ref: refFor(element),
+          role: roleOf(element),
+          name: labelFor(element),
+          box: boxOf(element),
+          ...(color && { color }),
+        };
+      });
+    const secretBoxes = [...walk(document)]
+      .filter((element) => {
+        if (!isVisible(element) || !onScreen(element)) return false;
+        if (element.tagName === 'IFRAME') {
+          const hints = `${element.getAttribute('src') ?? ''} ${element.getAttribute('name') ?? ''} ${element.getAttribute('title') ?? ''}`;
+          return PAYMENT_FRAME.test(hints);
+        }
+        return isSecretField(element);
+      })
+      .map(boxOf);
+    const frameCount = [...walk(document)].filter(
+      (element) => element.tagName === 'IFRAME' && isVisible(element) && onScreen(element),
+    ).length;
+    return {
+      viewport: viewportState(),
+      hasChallenge: hasChallenge(),
+      elements,
+      secretBoxes,
+      frameCount,
+    };
+  }
+
+  /** Finds what is really at a point, so a visual target is never clicked blind. */
+  function groundPoint(x: number, y: number): GroundedPoint {
+    let element = document.elementFromPoint?.(x, y) ?? null;
+    while (element?.shadowRoot) {
+      const inner = element.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === element) break;
+      element = inner;
+    }
+    if (!element || element === document.documentElement || element === document.body) {
+      return { kind: 'nothing' };
+    }
+    if (element.tagName === 'IFRAME' || element.tagName === 'FRAME') return { kind: 'frame' };
+
+    const control = element.closest(INTERACTIVE_SELECTOR);
+    return control
+      ? { kind: 'element', ref: refFor(control), interactive: true }
+      : { kind: 'element', ref: refFor(element), interactive: false };
+  }
+
+  /** For things drawn on a canvas and the like, which only make sense with coordinates. */
+  async function clickPoint(ref: string, x: number, y: number): Promise<ToolResult> {
+    const resolved = resolve(ref);
+    if ('failure' in resolved) return resolved.failure;
+    const { element } = resolved;
+    const init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y };
+    const { urlChanged, domChanged } = await observeEffect(() => {
+      element.dispatchEvent(new PointerEvent('pointerdown', init));
+      element.dispatchEvent(new MouseEvent('mousedown', init));
+      element.dispatchEvent(new PointerEvent('pointerup', init));
+      element.dispatchEvent(new MouseEvent('mouseup', init));
+      element.dispatchEvent(new MouseEvent('click', init));
+    });
+    if (urlChanged)
+      return { ok: true, summary: 'Clicked. The address changed.', pageChanged: true };
+    return {
+      ok: true,
+      summary: domChanged
+        ? 'Clicked. The page updated.'
+        : 'Clicked, but nothing visibly changed. It may not have worked.',
+      pageChanged: domChanged,
+    };
+  }
+
   function describe(ref?: string): DescribeResult | ToolResult {
     if (!ref) {
       const active = focused();
@@ -827,6 +995,14 @@ export function createPageAgent(options: PageAgentOptions = {}) {
     switch (request.type) {
       case 'content.ping':
         return { ok: true, summary: 'ready' };
+      case 'content.viewport':
+        return { ok: true, summary: 'viewport', data: viewportState() };
+      case 'content.visual_snapshot':
+        return { ok: true, summary: 'snapshot', data: visualSnapshot(request.limit) };
+      case 'content.ground_point':
+        return { ok: true, summary: 'grounded', data: groundPoint(request.x, request.y) };
+      case 'content.click_point':
+        return clickPoint(request.ref, request.x, request.y);
       case 'content.metadata':
         return metadata();
       case 'content.page_content':

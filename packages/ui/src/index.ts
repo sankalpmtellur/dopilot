@@ -5,6 +5,8 @@ export * from './button.js';
 export * from './composer.js';
 export * from './conversation.js';
 export * from './status.js';
+export * from './spoken.js';
 export * from './tabs.js';
 export * from './theme.js';
 export * from './use-command-console.js';
+export * from './voice.js';

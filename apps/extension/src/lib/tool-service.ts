@@ -25,6 +25,7 @@ import { executeCommand, findCurrentTabId, listTabs } from './browser-commands';
 import type { BrowserApi } from './browser-commands';
 import { NoPageAccessError } from './content-client';
 import type { ContentPort } from './content-client';
+import type { VisionService } from './vision-service';
 
 const PAGE_CONTENT_CHARS = 3000;
 const VISIBLE_TEXT_CHARS = 2000;
@@ -36,6 +37,8 @@ const LOAD_POLL_MS = 150;
 export interface PermissionPort {
   hasTabDetails(): Promise<boolean>;
   hasOrigin(origin: string): Promise<boolean>;
+  /** With this, the browser allows every site, so being able to inject proves nothing. */
+  hasAllUrls(): Promise<boolean>;
 }
 
 export interface ToolServiceDeps {
@@ -44,6 +47,7 @@ export interface ToolServiceDeps {
   permissions: PermissionPort;
   sleep?: (ms: number) => Promise<void>;
   loadTimeoutMs?: number;
+  vision?: VisionService;
 }
 
 /** Tools that read or act inside a page, and so need access to that page's site. */
@@ -59,7 +63,18 @@ const PAGE_TOOLS = new Set([
   'scroll_page',
   'press_key',
   'wait_for_element',
+  'capture_visible_tab',
+  'analyze_screenshot',
+  'get_visual_page_context',
 ]);
+
+const CAPTURE_TOOLS = new Set([
+  'capture_visible_tab',
+  'analyze_screenshot',
+  'get_visual_page_context',
+]);
+
+const VISION_UNAVAILABLE = toolFailure('vision_unavailable', 'Vision is not available.', false);
 
 function originOf(url: string): string | null {
   try {
@@ -131,6 +146,7 @@ export function createToolService({
   permissions,
   sleep = (ms) => new Promise((done) => setTimeout(done, ms)),
   loadTimeoutMs = LOAD_TIMEOUT_MS,
+  vision,
 }: ToolServiceDeps) {
   const tabDetailsAskedIn = new Set<string>();
 
@@ -178,7 +194,10 @@ export function createToolService({
   ): ToolAssessment {
     const elementName = facts?.element?.name;
     const titles: Record<string, string> = {
-      click_element: `Click “${elementName}”?`,
+      click_element: elementName ? `Click “${elementName}”?` : 'Click this unlabeled control?',
+      click_visual_target: elementName
+        ? `Click “${elementName}”?`
+        : 'Click what was found on screen?',
       press_key: `Press ${args.key} on “${elementName}”?`,
       close_tab: 'Close this tab?',
       navigate: `Go to ${String(args.url).slice(0, 80)}?`,
@@ -237,7 +256,8 @@ export function createToolService({
       }
       const origin = originOf(tab.url);
       if (origin && (await permissions.hasOrigin(origin))) return { decision: 'allow' };
-      if (await content.canAccess(tabId)) return { decision: 'allow' };
+      const allUrls = await permissions.hasAllUrls();
+      if (!allUrls && (await content.canAccess(tabId))) return { decision: 'allow' };
       if (origin) {
         return {
           decision: 'approve',
@@ -299,6 +319,20 @@ export function createToolService({
           };
         }
       }
+      if (name === 'navigate') {
+        const tabId = await resolveTabId(args, context);
+        const tab = tabId === null ? null : await api.getTab(tabId).catch(() => null);
+        // Going to a website would replace the page, including Dopilot's own settings.
+        if (tab?.url && isRestrictedTabUrl(tab.url)) {
+          return {
+            decision: 'block',
+            result: toolFailure(
+              'restricted_page',
+              'The current tab is an internal or Dopilot page, which must not be replaced. Use open_tab instead.',
+            ),
+          };
+        }
+      }
       return fromPolicy(name, assessToolCall(name, args, null), null, args);
     }
 
@@ -312,6 +346,32 @@ export function createToolService({
       return fromPolicy(name, assessToolCall(name, args, null), null, args);
     }
 
+    if (name === 'click_visual_target') {
+      if (!vision) return { decision: 'block', result: VISION_UNAVAILABLE };
+      const current = await resolveTabId({}, context);
+      const target = await vision.ground(
+        args.screenshotId as string,
+        args.pointId as string,
+        current,
+      );
+      if ('failure' in target) return { decision: 'block', result: target.failure };
+      const access = await checkPageAccess(target.tabId, context);
+      if (access.decision !== 'allow') return access;
+      // The same rules as any click, judged on what is really at that point.
+      return fromPolicy(
+        name,
+        assessToolCall('click_element', { ref: target.ref }, target.facts),
+        target.facts,
+        { ...args, ref: target.ref },
+      );
+    }
+
+    if (CAPTURE_TOOLS.has(name)) {
+      if (!vision) return { decision: 'block', result: VISION_UNAVAILABLE };
+      const refusal = await vision.refusalIfOff();
+      if (refusal) return refusal;
+    }
+
     if (!PAGE_TOOLS.has(name)) return { decision: 'allow' };
 
     const tabId = await resolveTabId(args, context);
@@ -321,6 +381,11 @@ export function createToolService({
 
     const access = await checkPageAccess(tabId, context);
     if (access.decision !== 'allow') return access;
+
+    if (vision && CAPTURE_TOOLS.has(name)) {
+      return vision.assessCapture(name, tabId, context);
+    }
+
     if (!needsPageFacts(name)) return { decision: 'allow' };
 
     // Facts come from the live page, so an action is judged by what is there now.
@@ -489,6 +554,31 @@ export function createToolService({
         }
       }
 
+      if (CAPTURE_TOOLS.has(name)) {
+        if (!vision) return VISION_UNAVAILABLE;
+        const tabId = await resolveTabId(args, context);
+        if (tabId === null) return toolFailure('no_target_tab', 'There is no tab to use.');
+        return await vision.execute(name, args, tabId, context);
+      }
+
+      if (name === 'click_visual_target') {
+        if (!vision) return VISION_UNAVAILABLE;
+        const current = await resolveTabId({}, context);
+        // Checked again here: the page may have changed while the user was deciding.
+        const target = await vision.ground(
+          args.screenshotId as string,
+          args.pointId as string,
+          current,
+        );
+        if ('failure' in target) return target.failure;
+        return await sendToPage(
+          target.tabId,
+          target.interactive
+            ? { type: 'content.click', ref: target.ref }
+            : { type: 'content.click_point', ref: target.ref, ...target.viewportPoint },
+        );
+      }
+
       const request = toRequest(name, args);
       if (!request) return toolFailure('unknown_tool', `Unknown tool: ${name}`, false);
 
@@ -509,7 +599,10 @@ export function createToolService({
   }
 
   async function sendToPage(tabId: number, request: ContentRequest): Promise<ToolResult> {
-    const canNavigate = request.type === 'content.click' || request.type === 'content.press';
+    const canNavigate =
+      request.type === 'content.click' ||
+      request.type === 'content.press' ||
+      request.type === 'content.click_point';
     let result: ToolResult;
     try {
       result = await content.send(tabId, request);

@@ -1,7 +1,7 @@
 import { agentStatusLabel } from '@dopilot/shared';
 import type { AgentApproval, AgentRunView, AgentTimelineEntry } from '@dopilot/shared';
-import { Check, CircleSlash, Hand, Loader, OctagonX, X } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { Check, CircleSlash, Eye, Hand, Loader, OctagonX, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from './button.js';
 import { StatusDot } from './status.js';
 import type { StatusTone } from './status.js';
@@ -29,6 +29,8 @@ export function AgentTimeline({ entries }: { entries: AgentTimelineEntry[] }) {
           <span className="mt-0.5 shrink-0">
             {entry.kind === 'approval' && entry.status === 'running' ? (
               <Hand aria-hidden="true" className="size-3.5 text-accent" />
+            ) : entry.kind === 'vision' && entry.status === 'running' ? (
+              <Eye aria-hidden="true" className="size-3.5 animate-breathe text-accent" />
             ) : (
               ENTRY_ICONS[entry.status]
             )}
@@ -55,12 +57,47 @@ export interface AgentPanelProps {
   onStop: () => void;
   /** Only extension pages pass this. The website cannot answer approvals. */
   onAnswerApproval?: (approval: AgentApproval, approved: boolean) => void;
+  /** Only extension pages pass this. Screenshots never reach the website. */
+  loadScreenshot?: (id: string) => Promise<string | null>;
+}
+
+/** Shows exactly what will be sent, with private fields already hidden. */
+export function ScreenshotPreview({
+  id,
+  load,
+}: {
+  id: string;
+  load: (id: string) => Promise<string | null>;
+}) {
+  const [image, setImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void load(id).then((dataUrl) => {
+      if (active) setImage(dataUrl);
+    });
+    return () => {
+      active = false;
+    };
+  }, [id, load]);
+
+  if (!image) return null;
+  return (
+    <img
+      src={image}
+      alt="The screenshot that would be sent"
+      className="animate-fade mt-2 max-h-36 w-full rounded-md border border-line object-contain"
+    />
+  );
 }
 
 /** The live view of a running task, with its emergency stop always in reach. */
-export function AgentPanel({ run, onStop, onAnswerApproval }: AgentPanelProps) {
+export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: AgentPanelProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const count = run.timeline.length;
+  const looking = run.timeline.some(
+    (entry) => entry.kind === 'vision' && entry.status === 'running',
+  );
 
   useEffect(() => {
     const element = scroller.current;
@@ -70,7 +107,7 @@ export function AgentPanel({ run, onStop, onAnswerApproval }: AgentPanelProps) {
   return (
     <section
       aria-label="Current task"
-      className="animate-rise flex flex-col gap-2.5 rounded-xl border border-line bg-surface p-3"
+      className="animate-rise flex max-h-[70vh] flex-col gap-2.5 overflow-y-auto rounded-xl border border-line bg-surface p-3"
     >
       <div className="flex items-center justify-between gap-2">
         <p role="status" className="flex min-w-0 items-center gap-2 text-[13px] font-medium">
@@ -94,7 +131,15 @@ export function AgentPanel({ run, onStop, onAnswerApproval }: AgentPanelProps) {
         </p>
       )}
 
-      {count > 0 && (
+      {looking && (
+        <p role="status" className="flex items-center gap-1.5 text-xs text-accent">
+          <Eye aria-hidden="true" className="size-3.5" />
+          Dopilot is looking at this page, using a screenshot.
+        </p>
+      )}
+
+      {/* The prompt below says the same as its timeline entry, so the steps wait. */}
+      {count > 0 && !run.approval && (
         <div ref={scroller} className="max-h-40 overflow-y-auto">
           <AgentTimeline entries={run.timeline} />
         </div>
@@ -108,6 +153,9 @@ export function AgentPanel({ run, onStop, onAnswerApproval }: AgentPanelProps) {
         >
           <p className="text-sm font-medium break-words">{run.approval.title}</p>
           <p className="mt-0.5 text-xs break-words text-muted">{run.approval.detail}</p>
+          {run.approval.screenshotId && loadScreenshot && (
+            <ScreenshotPreview id={run.approval.screenshotId} load={loadScreenshot} />
+          )}
           {onAnswerApproval ? (
             <div className="mt-2 flex gap-2">
               <Button onClick={() => run.approval && onAnswerApproval(run.approval, false)}>

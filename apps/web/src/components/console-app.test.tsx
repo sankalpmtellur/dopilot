@@ -22,8 +22,13 @@ const state: ExtensionState = {
     connection: { state: 'connected', checkedAt: 1 },
     models: [{ id: 'model-a' }],
     selectedModel: 'model-a',
+    visionModels: [],
+    selectedVisionModel: null,
+    visionFallback: 'qwen/qwen3.8-27b',
+    speechModels: [],
   },
   agent: null,
+  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto' },
   recentActions: [],
 };
 
@@ -81,12 +86,11 @@ describe('without the extension', () => {
     expect(screen.queryByText('Opened a new tab.')).toBeNull();
   });
 
-  it('keeps the microphone as a placeholder', () => {
+  it('keeps typing available, and explains voice when no speech service exists', async () => {
     render(<ConsoleApp />);
-    expect(
-      (screen.getByRole('button', { name: /voice input, coming soon/i }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Speak a command' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/You can still type/);
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBeTruthy();
   });
 });
 
@@ -157,6 +161,7 @@ describe('with the extension', () => {
     startedAt: 0,
     finishedAt: null,
     actionCount: 1,
+    readPageContent: false,
     maxActions: 15,
     timeline: [{ id: '1', at: 0, kind: 'act', status: 'done', label: 'Opening Wikipedia' }],
     approval: { id: 'a1', kind: 'action', title: 'Click “Buy”?', detail: 'This spends money.' },

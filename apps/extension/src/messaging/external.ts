@@ -28,6 +28,10 @@ export interface ExternalDeps {
   startAgent(instruction: string, senderTabId?: number): Promise<string | null>;
   stopAgent(): Promise<void>;
   resetAgent(): Promise<void>;
+  transcribe(
+    audio: string,
+    mimeType: 'audio/webm' | 'audio/ogg' | 'audio/mp4',
+  ): Promise<{ text: string | null; error: string | null }>;
   rateLimiter?: RateLimiter;
 }
 
@@ -95,6 +99,24 @@ export function createExternalHandler(deps: ExternalDeps) {
           requestId,
           type: 'external.agent_started',
           error: await deps.startAgent(request.instruction, sender.tabId),
+        };
+      }
+
+      case 'external.transcribe': {
+        if (!rateLimiter.tryAcquire()) {
+          return {
+            ...base,
+            requestId,
+            type: 'external.transcription',
+            text: null,
+            error: 'Too many requests. Wait a moment.',
+          };
+        }
+        return {
+          ...base,
+          requestId,
+          type: 'external.transcription',
+          ...(await deps.transcribe(request.audio, request.mimeType)),
         };
       }
 

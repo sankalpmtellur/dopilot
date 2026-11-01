@@ -13,9 +13,14 @@ import {
   groqShortLabel,
   groqTone,
   IconButton,
+  SpokenToggle,
   StatusPill,
   TabList,
   useCommandConsole,
+  useSpokenResponses,
+  useVoiceInput,
+  VoiceButton,
+  VoiceStatusLine,
 } from '@dopilot/ui';
 import { Activity, Globe, MessageSquare, Plus, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -31,6 +36,7 @@ import {
   sendBrowserCommand,
   startAgentTask,
   stopAgentTask,
+  transcribeThroughExtension,
 } from '@/lib/extension-bridge';
 
 type Section = 'chat' | 'browser' | 'activity';
@@ -89,10 +95,20 @@ export function ConsoleApp() {
   const taskRunning = run !== null && isAgentActive(run.status);
   const { reportRun } = console_;
   useEffect(() => reportRun(run), [reportRun, run]);
+  const spoken = useSpokenResponses({ run, messages: console_.messages });
   const stopTask = () => {
     console_.stop();
+    spoken.interrupt();
     void stopAgentTask(extensionId).then(() => refresh());
   };
+  const voice = useVoiceInput({
+    choice: state?.preferences.voiceEngine ?? 'auto',
+    groqAllowed: state?.preferences.speechFallback ?? false,
+    transcribe: (audio, mimeType) => transcribeThroughExtension(extensionId, audio, mimeType),
+    onTranscript: console_.submit,
+    onStopCommand: stopTask,
+    onListeningStart: spoken.interrupt,
+  });
   const hasRunCommand = (state?.recentActions.length ?? 0) > 0 || run !== null;
   const setupComplete = state?.groq.connection.state === 'connected' && hasRunCommand;
   const showGuide = guideRequested || (!guideDismissed && !setupComplete);
@@ -194,7 +210,23 @@ export function ConsoleApp() {
                 <AgentPanel run={run} onStop={stopTask} />
               </div>
             )}
+            <div className="mb-2 empty:hidden">
+              <VoiceStatusLine
+                voice={voice}
+                {...(connected && { onOpenSettings: manageInExtension })}
+              />
+            </div>
             <CommandComposer
+              voiceControls={
+                <>
+                  <VoiceButton voice={voice} />
+                  <SpokenToggle
+                    enabled={spoken.enabled}
+                    onChange={spoken.setEnabled}
+                    available={spoken.available}
+                  />
+                </>
+              }
               value={draft}
               onValueChange={setDraft}
               onSubmit={console_.submit}

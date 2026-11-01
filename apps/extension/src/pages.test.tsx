@@ -22,6 +22,10 @@ const groq: GroqStatus = {
   connection: { state: 'untested', checkedAt: null },
   models: [],
   selectedModel: null,
+  visionModels: [],
+  selectedVisionModel: null,
+  visionFallback: 'qwen/qwen3.8-27b',
+  speechModels: [],
 };
 
 const state: ExtensionState = {
@@ -33,6 +37,7 @@ const state: ExtensionState = {
   currentTabId: 7,
   groq,
   agent: null,
+  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto' },
   recentActions: [],
 };
 
@@ -96,10 +101,7 @@ describe('side panel', () => {
     expect(screen.getByText('No Groq key')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(
-      (screen.getByRole('button', { name: /voice input, coming soon/i }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    expect(screen.getByRole('button', { name: 'Speak a command' })).toBeTruthy();
     expect(screen.getByText(/Nothing has been run yet/)).toBeTruthy();
   });
 
@@ -139,6 +141,16 @@ describe('side panel', () => {
   });
 });
 
+describe('side panel voice', () => {
+  it('explains when voice needs turning on, and text still works', async () => {
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Speak a command' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/allow sending voice to Groq/);
+    expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBeTruthy();
+  });
+});
+
 describe('side panel agent', () => {
   const run: NonNullable<ExtensionState['agent']> = {
     id: 'run-1',
@@ -150,6 +162,7 @@ describe('side panel agent', () => {
     startedAt: 0,
     finishedAt: null,
     actionCount: 1,
+    readPageContent: false,
     maxActions: 15,
     timeline: [],
     approval: { id: 'a1', kind: 'action', title: 'Click “Delete”?', detail: 'Deletes it.' },
@@ -208,6 +221,39 @@ describe('side panel agent', () => {
     render(<App />);
     await userEvent.click(await screen.findByRole('button', { name: 'Allow' }));
     expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ['https://a.com/*'] });
+    await waitFor(() => expect(local.get('authorizedSites')).toEqual(['https://a.com']));
+  });
+
+  it('shows the screenshot that would be sent, and asks for broad access only when clicked', async () => {
+    handler = (message) =>
+      message.type === 'panel.get_state'
+        ? {
+            protocolVersion: PROTOCOL_VERSION,
+            type: 'panel.state',
+            state: {
+              ...state,
+              agent: {
+                ...run,
+                approval: {
+                  id: 'a4',
+                  kind: 'screenshot',
+                  title: 'Send a screenshot of a.com to Groq?',
+                  detail: 'Groq will process this image.',
+                  screenshotId: 's1',
+                },
+              },
+            },
+          }
+        : message.type === 'panel.get_screenshot'
+          ? {
+              protocolVersion: PROTOCOL_VERSION,
+              type: 'panel.screenshot',
+              dataUrl: 'data:image/jpeg;base64,/9j/',
+            }
+          : { protocolVersion: PROTOCOL_VERSION, type: 'panel.ack' };
+    render(<App />);
+    expect(await screen.findByAltText('The screenshot that would be sent')).toBeTruthy();
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
   });
 
   it('counts a refused browser permission as declining', async () => {
@@ -305,9 +351,37 @@ describe('settings', () => {
     expect(screen.queryByText('https://api.groq.com')).toBeNull();
     const row = screen.getByText('https://en.wikipedia.org').closest('li') as HTMLElement;
     await userEvent.click(row.querySelector('button') as HTMLElement);
-    expect(chrome.permissions.remove).toHaveBeenCalledWith({
-      origins: ['https://en.wikipedia.org/*'],
-    });
+    await waitFor(() =>
+      expect(chrome.permissions.remove).toHaveBeenCalledWith({
+        origins: ['https://en.wikipedia.org/*'],
+      }),
+    );
+  });
+
+  it('leaves voice through Groq off until asked', async () => {
+    render(<SettingsForm />);
+    const toggle = (await screen.findByLabelText(
+      'Allow sending my voice to Groq',
+    )) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    await userEvent.click(toggle);
+    await waitFor(() => expect(local.get('preferences')).toMatchObject({ speechFallback: true }));
+  });
+
+  it('can turn vision off, and choose a fallback model', async () => {
+    render(<SettingsForm />);
+    const toggle = await screen.findByLabelText('Let Dopilot use screenshots when it needs to see');
+    await userEvent.click(toggle);
+    await waitFor(() => expect(local.get('preferences')).toMatchObject({ vision: false }));
+
+    const fallback = (await screen.findByLabelText('Fallback vision model')) as HTMLInputElement;
+    expect(fallback.value).toBe('qwen/qwen3.8-27b');
+    await userEvent.clear(fallback);
+    await userEvent.type(fallback, 'other/model');
+    await userEvent.tab();
+    await waitFor(() =>
+      expect(local.get('groqSettings')).toMatchObject({ visionFallback: 'other/model' }),
+    );
   });
 
   it('offers automatic model choice', async () => {

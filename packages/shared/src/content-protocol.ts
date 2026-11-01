@@ -25,6 +25,18 @@ const text = z.string().max(300);
 /** Everything the service worker can ask of a page. There is no way to send code. */
 export const ContentRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('content.ping') }),
+  z.strictObject({ type: z.literal('content.viewport') }),
+  z.strictObject({
+    type: z.literal('content.visual_snapshot'),
+    limit: z.number().int().positive(),
+  }),
+  z.strictObject({ type: z.literal('content.ground_point'), x: z.number(), y: z.number() }),
+  z.strictObject({
+    type: z.literal('content.click_point'),
+    ref: ElementRefSchema,
+    x: z.number(),
+    y: z.number(),
+  }),
   z.strictObject({ type: z.literal('content.metadata') }),
   z.strictObject({
     type: z.literal('content.page_content'),
