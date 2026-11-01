@@ -2,11 +2,11 @@ import { ToolCallSchema, toolFailure } from '@dopilot/shared';
 import type { ToolResult } from '@dopilot/shared';
 import { z } from 'zod';
 
-/** Local development only, and off until a person pastes a token in settings. */
-export const MCP_BRIDGE_ORIGIN = 'http://127.0.0.1:4319';
 declare const __DOPILOT_MCP__: boolean | undefined;
 /** Public builds leave this out, including from the security policy, unless asked for. */
 export const MCP_AVAILABLE = typeof __DOPILOT_MCP__ === 'undefined' ? true : __DOPILOT_MCP__;
+/** Local development only, and off until a person pastes a token in settings. */
+export const MCP_BRIDGE_ORIGIN = MCP_AVAILABLE ? 'http://127.0.0.1:4319' : '';
 const STORAGE_KEY = 'mcpBridgeToken';
 const RETRY_DELAY_MS = 3000;
 

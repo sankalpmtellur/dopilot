@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/postcss';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-import { buildManifest, resolveBuildConfig } from './build-config';
+import { buildManifest, resolveBuildConfig } from './build-config.ts';
 
 const src = resolve(import.meta.dirname, 'src');
 const buildConfig = resolveBuildConfig(process.env);

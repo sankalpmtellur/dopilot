@@ -23,6 +23,8 @@
     "format:check": "prettier --check .",
     "verify:extension": "node scripts/verify-extension.mjs",
     "release:extension": "node scripts/release-extension.mjs",
+    "verify:production": "node scripts/verify-production.mjs",
+    "notices": "node scripts/third-party-notices.mjs",
     "mcp": "pnpm --silent --filter @dopilot/backend mcp"
   },
   "devDependencies": {

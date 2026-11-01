@@ -27,6 +27,16 @@ describe('manifest', () => {
     expect(JSON.stringify(manifest.permissions)).not.toContain('<all_urls>');
   });
 
+  it('has everything a release needs alongside it', () => {
+    const publicDir = resolve(import.meta.dirname, '../public');
+    for (const path of Object.values(manifest.icons as Record<string, string>)) {
+      expect(readFileSync(resolve(publicDir, path)).subarray(1, 4).toString()).toBe('PNG');
+    }
+    expect(readFileSync(resolve(publicDir, 'THIRD_PARTY_NOTICES.txt'), 'utf8')).toContain(
+      'groq-sdk',
+    );
+  });
+
   it('exposes nothing to webpages beyond the allowed origin', () => {
     expect(manifest.web_accessible_resources).toBeUndefined();
     expect(manifest.content_scripts).toBeUndefined();

@@ -1,472 +1,46 @@
-# TASK 5 — DOPILOT: Complete Reliability Audit, Performance Optimization, Security Hardening & Deployment Preparation
+# TASK 6 — Dopilot: Final Production Readiness Audit
 
-## Objective
+Dopilot is already pushed to GitHub and working locally in Brave.
 
-Continue working in the existing Dopilot monorepo.
+Your task is to verify and prepare the complete project for production deployment. Do not deploy anything yet.
 
-Tasks 1–4 are complete. Dopilot currently supports:
+## 1. Full Production Audit
 
-- Groq-powered autonomous AI agent
-- Browser navigation and tab management
-- DOM-based browser interactions
-- Screenshot-based Vision AI
-- Voice commands and speech-to-text
-- Text-to-speech
-- MCP browser tools
-- Chrome and Brave extensions
-- Website and extension communication
-- User-provided Groq API keys
+- Review the complete monorepo.
+- Verify frontend, backend, extension, shared packages, MCP, and Groq integration.
+- Check production build compatibility.
+- Identify missing files, dependencies, environment variables, and configurations.
+- Fix actual deployment blockers without unnecessary rewrites.
 
-The application has been tested manually with a real Groq API key.
+## 2. Vercel Preparation
 
-**Current user feedback:** Dopilot works well overall, but occasionally freezes, responds slowly, executes incorrect actions, or produces incorrect AI outputs.
+- Prepare `apps/web` for Vercel deployment from the existing GitHub monorepo.
+- Verify the correct root directory, install command, build command, and output settings.
+- Ensure production environment variables are documented.
+- Verify HTTPS website-to-extension communication.
+- Confirm the frontend does not require the Fastify backend.
 
-Your primary responsibility is to identify and fix these problems, then prepare the application for eventual public deployment.
+## 3. Browser Extension Distribution
 
-Do not assume the existing implementations are correct merely because automated tests pass.
+- Prepare a production Chrome/Brave extension build.
+- Verify Manifest V3 compatibility.
+- Verify extension icons, permissions, CSP, and production origins.
+- Ensure production extension IDs can be configured correctly.
+- Prepare an installable ZIP for manual distribution.
+- Verify the ZIP structure and document manual installation.
+- Do not publish to the Chrome Web Store.
 
-## 1. Full Project Audit
+## 4. Security
 
-Inspect the entire monorepo.
+- Ensure API keys and credentials are never included in Git or production builds.
+- Audit extension permissions and website messaging.
+- Verify screenshot, microphone, and Groq privacy controls.
+- Check that development URLs are excluded from production.
+- Preserve all agent safety and approval restrictions.
+- Review third-party license and attribution obligations.
+- Identify information needed for a public privacy policy.
 
-Review:
-
-- Frontend and extension communication
-- Agent execution loop
-- Groq inference integration
-- Browser tools and DOM interaction
-- Vision implementation
-- Voice implementation
-- MCP architecture
-- Extension service worker
-- State management
-- Error handling
-- Security and permissions
-- Performance bottlenecks
-
-Identify actual root causes through code inspection, tests, and runtime evidence.
-
-Fix identified defects instead of adding superficial workarounds.
-
-Preserve all working functionality.
-
-## 2. Fix Agent Freezing and Stuck Tasks
-
-Investigate why Dopilot occasionally gets stuck while executing instructions.
-
-Pay special attention to:
-
-- Hanging Groq API requests
-- Unresolved promises
-- Message bridge timeouts
-- Service-worker suspension
-- Race conditions
-- Navigation delays
-- Stale element references
-- DOM observation failures
-- Repeated tool calls
-- Infinite reasoning loops
-- Pending approval prompts
-- Multiple simultaneous task executions
-
-Implement:
-
-- Per-operation timeouts
-- AbortController-based cancellation
-- Reliable task-state transitions
-- Controlled retries with exponential backoff
-- Detection of repeated actions without progress
-- Safe handling of interrupted execution
-- Automatic recovery from recoverable failures
-- Clear failure messages for unrecoverable situations
-
-Do not blindly retry non-idempotent actions, such as clicking Submit or sending a message.
-
-The Stop button must reliably cancel pending operations and prevent subsequent browser actions.
-
-Ensure no task remains indefinitely in Thinking, Observing, or Executing.
-
-## 3. Improve AI Reasoning and Tool Selection
-
-Audit the agent's system prompts, tool schemas, reasoning flow, and model selection.
-
-Improve its ability to:
-
-- Interpret natural-language instructions correctly
-- Understand the user's intended tab
-- Select appropriate browser tools
-- Execute actions in the correct order
-- Avoid unnecessary tool calls
-- Recover when an action fails
-- Understand when a task is completed
-- Avoid reporting success before verification
-- Ask for clarification when an instruction is genuinely ambiguous
-
-Example:
-
-"Open a new tab and open YouTube."
-
-Expected behavior:
-
-1. Create exactly one new tab.
-2. Navigate that same tab to YouTube.
-3. Verify the navigation succeeded.
-4. Report completion.
-
-Do not open multiple unnecessary tabs or repeatedly navigate to the same website.
-
-Improve contextual references such as "this tab", "previous tab", and "the button on my screen".
-
-Review whether model-generated tool calls conform to Groq's actual API behavior.
-
-## 4. Groq Model Optimization
-
-Review the latest available Groq integration and configured models.
-
-Implement a reliable capability-aware model selection system:
-
-- Text and tool calling
-- Vision
-- Speech-to-text
-
-Do not assume every model supports the same capabilities.
-
-Requirements:
-
-- Validate selected model capabilities before use.
-- Handle retired or unavailable models.
-- Distinguish model failures from application bugs.
-- Use the user's selected model when supported.
-- Provide meaningful fallbacks that respect user preferences.
-- Never silently downgrade to a model that cannot perform the requested task.
-- Avoid unnecessary model discovery requests.
-- Cache model metadata appropriately.
-- Respect free-tier rate limits.
-
-Optimize prompts and tool definitions without sacrificing tool accuracy.
-
-Do not add paid APIs or subscriptions.
-
-## 5. Performance Optimization
-
-Profile real execution paths.
-
-Measure:
-
-- Time to first agent response
-- Groq API latency
-- DOM observation time
-- Browser command execution time
-- Screenshot processing time
-- End-to-end task completion time
-- Tool-call count
-- Estimated token usage
-
-Optimize:
-
-- Repeated webpage observations
-- Large DOM payloads
-- Conversation history size
-- Screenshot compression
-- Vision invocation frequency
-- Redundant model requests
-- Browser messaging overhead
-- Frontend rerenders
-- Side-panel responsiveness
-
-Prefer deterministic execution for simple requests.
-
-For example, basic commands such as opening a tab should not require Groq inference when they can be executed reliably without AI.
-
-Avoid excessive parallel operations that might cause rate limits.
-
-Add lightweight diagnostic timings without exposing private page content, API keys, or sensitive URLs.
-
-## 6. Voice Reliability
-
-Investigate the complete voice-command pipeline.
-
-Fix potential problems involving:
-
-- Microphone start/stop handling
-- Speech recognition errors
-- Empty transcriptions
-- Recording delays
-- Multiple recordings
-- Duplicate command submissions
-- Audio upload failures
-- Brave compatibility
-- Groq speech-to-text failures
-- Cancellation during recording
-
-Improve transcription handling and UI feedback.
-
-Keep push-to-talk as the default.
-
-Do not introduce always-on background recording.
-
-Maintain the text-input fallback.
-
-## 7. Vision Reliability
-
-Audit the screenshot and visual-targeting implementations.
-
-Improve:
-
-- Screenshot capture reliability
-- Screenshot freshness verification
-- Image preprocessing
-- Visual target identification
-- Matching visual targets to DOM elements
-- Coordinate scaling
-- Scrolling and viewport changes
-- Dynamic webpages
-- Misidentified elements
-
-Prefer verified DOM interactions over coordinate clicks.
-
-If a visual target cannot be identified confidently, do not guess.
-
-Do not perform repeated screenshots without a justified reason.
-
-Ensure screenshot capture permission handling remains secure.
-
-## 8. Browser Automation Reliability
-
-Test against real-world websites.
-
-Focus on:
-
-- YouTube
-- Wikipedia
-- GitHub
-- Search engines
-- Common documentation websites
-- Local test pages containing forms, menus, modals, and dynamic elements
-
-Test:
-
-- Opening tabs
-- Switching tabs
-- Navigation
-- Clicking
-- Typing
-- Searching
-- Scrolling
-- Dropdowns
-- Dynamic page changes
-- Multiple sequential instructions
-- Handling inaccessible elements
-
-Ensure browser actions affect the intended tab.
-
-Prevent accidental navigation away from the Dopilot website or settings pages.
-
-Improve behavior when users manually change tabs during execution.
-
-Handle unsupported pages and iframe limitations explicitly rather than pretending an action succeeded.
-
-## 9. MCP Integration Audit
-
-Inspect the existing MCP architecture.
-
-Verify that:
-
-- MCP tools are registered correctly.
-- Tool arguments are validated.
-- Browser permissions are enforced.
-- User approvals cannot be bypassed.
-- MCP and agent tools share the same execution logic.
-- Tool failures return structured errors.
-- Local MCP transport works reliably.
-- Unauthorized remote connections are impossible.
-
-Preserve the extension's ability to run without a separate Node.js MCP server.
-
-Do not introduce unnecessary MCP servers merely to increase the number of tools.
-
-## 10. Security and Privacy Audit
-
-Review the application as a publicly distributable AI browser extension.
-
-Focus on:
-
-- Groq API key storage
-- Extension messaging
-- Website origin verification
-- Optional browser permissions
-- Screenshot privacy
-- Microphone privacy
-- Prompt injection
-- Sensitive webpages
-- Browser tab isolation
-- Approval bypasses
-- Malicious page content
-- Unsafe URL handling
-- Accidental disclosure of page information
-
-Important requirements:
-
-- Never expose Groq API keys to the website or backend.
-- Never log secret values.
-- Never allow webpage content to issue privileged instructions.
-- Preserve approval requirements for sensitive actions.
-- Prevent unauthorized screenshots.
-- Keep the browser's internal pages inaccessible.
-- Preserve protections against automatic graded-quiz submission and CAPTCHA solving.
-
-Investigate whether the current `<all_urls>` permission can be reduced or avoided using `activeTab` and user-granted access.
-
-Prefer narrower permissions where technically possible.
-
-Do not weaken security merely to improve automation success rates.
-
-## 11. Frontend and Side-Panel UX
-
-Improve the existing UI without unnecessarily redesigning it.
-
-Focus on:
-
-- Responsive layouts
-- Smooth chat scrolling
-- Clear agent status
-- Visible execution progress
-- Fast feedback after submitting instructions
-- Accessible Stop button
-- Understandable error messages
-- Easy retry controls
-- Groq connection information
-- Voice recording indicators
-- Vision permission indicators
-
-Fix confusing behaviors such as displaying cancelled actions as generic errors.
-
-Make long-running tasks understandable to users without excessive notifications or animations.
-
-Maintain consistent styling between website and extension.
-
-## 12. Deployment Preparation
-
-Prepare Dopilot for public use.
-
-Target architecture:
-
-- Website: Vercel
-- Backend: Render, if genuinely necessary
-- Extension: Chrome and Brave through Chromium extension distribution
-- AI: Users' own Groq API keys
-- MCP: Browser-side adapter with an optional local development server
-
-Tasks:
-
-1. Audit production environment variables.
-2. Prepare secure production builds.
-3. Confirm the website works over HTTPS.
-4. Define production website-to-extension communication.
-5. Investigate extension ID handling and distribution.
-6. Ensure development-only origins are not allowed in production.
-7. Prepare configuration for production domains.
-8. Remove development-only behaviors from production builds.
-9. Review Chrome Web Store compatibility.
-10. Prepare installation and setup instructions.
-11. Verify production builds do not expose credentials.
-12. Determine whether the backend is necessary for the current product.
-
-Important: The current extension ID is pinned for local development. Design a correct production strategy without breaking existing local installations.
-
-Do not assume a browser extension has the same ID when installed unpacked versus distributed through a browser store.
-
-Avoid reliance on manually copied extension IDs or unrestricted cross-origin messaging.
-
-Assess whether backend hosting can be eliminated for the initial release, since agent execution and Groq requests already occur inside the extension.
-
-If backend hosting is unnecessary, retain the backend source but keep production deployment independent of it.
-
-**Do not deploy yet. Do not purchase domains, hosting, or services.**
-
-## 13. Automated Testing
-
-Expand tests substantially where they address real failure modes.
-
-Cover:
-
-- Agent execution timeouts
-- Infinite-loop prevention
-- Tool-call accuracy
-- Multi-step execution
-- Task cancellation
-- Service-worker interruption
-- Model errors
-- Groq rate limits
-- Vision errors
-- Audio errors
-- Tab-selection mistakes
-- Stale DOM elements
-- Dynamic pages
-- Screenshot permissions
-- MCP authorization
-- Prompt injection
-- Sensitive-action approval
-- Production configuration
-- Extension communication
-
-Do not rely exclusively on mocked happy-path tests.
-
-Add fault-injection tests for latency, dropped messages, service-worker restarts, navigation races, and failed model requests.
-
-Ensure tests verify actual outcomes rather than merely checking generated status messages.
-
-## 14. Real-World End-to-End Testing
-
-Use the installed Brave browser whenever possible.
-
-Test representative workflows:
-
-**Workflow A — Simple navigation**
-
-"Open a new tab and go to YouTube."
-
-**Workflow B — Multi-step navigation**
-
-"Open Wikipedia, search for artificial intelligence, and scroll to the history section."
-
-**Workflow C — Tab management**
-
-"Switch to GitHub, then return to the previous tab."
-
-**Workflow D — Visual interaction**
-
-"Find the blue button on this test page and click it."
-
-**Workflow E — Voice**
-
-Speak:
-
-"Open a new tab and navigate to YouTube."
-
-**Workflow F — Failure recovery**
-
-Simulate a failed request or missing element and verify the agent recovers or exits with a clear error.
-
-**Workflow G — Cancellation**
-
-Stop an active multi-step task and ensure no further browser actions occur.
-
-**Workflow H — Repeated reliability**
-
-Repeat representative safe workflows to identify intermittent bugs.
-
-Do not execute unsafe or destructive browser actions during testing.
-
-Use mocked responses for repeated automated tests.
-
-If the user's Groq key is already available through the existing extension, use it only through the normal authorized application flow for a small number of purposeful live tests. Do not extract, print, copy, or persist the key elsewhere.
-
-If a real key is unavailable, clearly report which tests remain unverified.
-
-Do not make excessive inference requests.
-
-## 15. Quality Gates
+## 5. Verification
 
 Run:
 
@@ -477,56 +51,30 @@ Run:
 - `pnpm verify:extension`
 - `pnpm audit --prod`
 
-Resolve relevant issues and regressions.
+Test the production website and extension builds against each other where possible.
 
-If any check fails, investigate the underlying cause.
+Fix genuine failures.
 
-Do not report success merely because a test was skipped.
+## 6. Restrictions
 
-## 16. Restrictions
-
-- No paid dependencies or services.
-- No unnecessary rewrites.
-- No major architecture changes without a clear technical reason.
-- Do not introduce unrelated features.
-- Do not remove working functionality.
-- Do not disable security checks to make tests pass.
-- Do not deploy yet.
+- Do not deploy to Vercel or Render.
+- Do not purchase services.
+- Do not publish the extension.
+- Do not change the architecture unnecessarily.
 - Do not overwrite `note.txt`.
-- Do not create separate Markdown task reports.
-- Do not commit or push unless explicitly requested.
-- Prefer Brave for browser testing.
-- Conserve Groq free-tier usage.
+- Do not create a separate Markdown report.
+- Do not commit or push without explicit permission.
 
-## 17. Expected Outcome
+## 7. Final Response
 
-Dopilot should become significantly more reliable and responsive.
+Provide a concise summary covering:
 
-Expected results:
+1. Production readiness: Pass/Fail.
+2. Any remaining blockers.
+3. Exact Vercel deployment settings.
+4. Whether Render is required.
+5. Extension ZIP location and installation method.
+6. Required production environment variables.
+7. Test results.
 
-1. Reduced freezing and stalled tasks.
-2. Faster execution of common commands.
-3. More accurate tool selection.
-4. Better multi-step browser automation.
-5. Improved voice reliability.
-6. Improved vision accuracy and safety.
-7. Reliable task cancellation.
-8. Stable Chrome and Brave behavior.
-9. Hardened extension security.
-10. Production-ready build configuration.
-
-Provide a concise final report covering:
-
-- Root causes discovered and fixed.
-- Performance measurements before and after, where available.
-- Reliability improvements.
-- Test results.
-- Actual live Groq verification.
-- Security findings.
-- Deployment readiness and remaining blockers.
-
-Be transparent about unverified functionality.
-
-**Primary priority: Reliability > Correctness > Security > Performance > UX polish > Deployment preparation.**
-
-Do not claim the application is production-ready until important security and release blockers have been resolved.
+Prioritize identifying release blockers over cosmetic improvements.

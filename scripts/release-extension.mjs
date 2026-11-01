@@ -2,11 +2,14 @@
 // Builds the extension for public distribution, proves the result is fit to publish, and
 // zips it for a store upload. It deploys nothing and uploads nothing.
 //
-//   DOPILOT_WEB_ORIGIN=https://your.domain pnpm release:extension
+//   DOPILOT_WEB_ORIGIN=https://your.domain DOPILOT_KEEP_KEY=1 pnpm release:extension
 //
-// DOPILOT_KEEP_KEY=1 keeps the pinned key, for sharing an unpacked build. DOPILOT_MCP=1 keeps
-// the local MCP bridge. A store build should use neither.
+// DOPILOT_KEEP_KEY=1 keeps the pinned key, which manual installs need: without it, each
+// install's ID depends on its folder, and the website could not find it. Leave it out for a
+// store upload, which refuses keys. DOPILOT_MCP=1 keeps the local MCP bridge. Neither is
+// for ordinary use beyond that.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -16,6 +19,7 @@ const env = { ...process.env, DOPILOT_CHANNEL: 'production' };
 const run = (command, args, cwd = root) =>
   execFileSync(command, args, { cwd, env, stdio: 'inherit' });
 
+run('node', ['scripts/third-party-notices.mjs']);
 run('pnpm', ['build:packages']);
 run('pnpm', ['--filter', '@dopilot/extension', 'build']);
 
@@ -58,6 +62,10 @@ for (const file of files(dist)) {
   if (/localhost:3000/.test(text)) problems.push(`A development origin in ${name}`);
 }
 
+if (!statSync(join(dist, 'THIRD_PARTY_NOTICES.txt'), { throwIfNoEntry: false })) {
+  problems.push('The third-party notices are missing.');
+}
+
 if (problems.length > 0) {
   console.error(`Not fit to publish:\n${problems.map((item) => `  - ${item}`).join('\n')}`);
   process.exit(1);
@@ -68,5 +76,13 @@ mkdirSync(outDir, { recursive: true });
 const zip = join(outDir, `dopilot-${manifest.version}.zip`);
 rmSync(zip, { force: true });
 run('zip', ['-qr', zip, '.'], dist);
-console.log(`Checks passed. Ready to upload, not uploaded: ${zip}`);
+console.log(`Checks passed. Not uploaded anywhere: ${zip}`);
+if (manifest.key) {
+  // How browsers derive an ID from a key: the hash's first 16 bytes, written with a to p.
+  const hash = createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex');
+  const id = [...hash.slice(0, 32)]
+    .map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16)))
+    .join('');
+  console.log(`Extension ID for NEXT_PUBLIC_DOPILOT_EXTENSION_IDS: ${id}`);
+}
 console.log('Run `pnpm build` afterwards to go back to a local development build.');

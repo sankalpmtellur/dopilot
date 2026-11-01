@@ -14,7 +14,7 @@ export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
  * `blockNetwork` routes everything except local addresses to a closed port, so nothing
  * in a run can reach the internet, even if interception were to miss a request.
  */
-export function launch(executable, { blockNetwork = false, fakeMic = false } = {}) {
+export function launch(executable, { blockNetwork = false, fakeMic = false, extraArgs = [] } = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'dopilot-verify-'));
   const child = spawn(
     executable,
@@ -23,6 +23,7 @@ export function launch(executable, { blockNetwork = false, fakeMic = false } = {
       ...(blockNetwork ? ['--proxy-server=127.0.0.1:9'] : []),
       // A real microphone pipeline with a synthetic device, and no permission dialog.
       ...(fakeMic ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] : []),
+      ...extraArgs,
       '--remote-debugging-pipe',
       '--enable-unsafe-extension-debugging',
       '--no-first-run',

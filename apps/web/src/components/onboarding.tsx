@@ -34,6 +34,12 @@ function Step({ index, title, done, children }: StepProps) {
   );
 }
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+/** Where visitors get the extension, until it is in a store. Public, like all NEXT_PUBLIC_ values. */
+const EXTENSION_DOWNLOAD_URL =
+  process.env.NEXT_PUBLIC_DOPILOT_EXTENSION_DOWNLOAD_URL ||
+  'https://github.com/sankalpmtellur/dopilot/releases/latest';
+
 export interface OnboardingProps {
   connection: ExtensionConnection;
   hasRunCommand: boolean;
@@ -77,10 +83,24 @@ export function Onboarding({
             'Connected.'
           ) : (
             <>
-              Dopilot needs desktop Chrome or Brave. Run <code>pnpm build</code>, open{' '}
-              <code>chrome://extensions</code> or <code>brave://extensions</code>, turn on Developer
-              mode, and load <code>apps/extension/dist</code> unpacked. This page will notice
-              automatically.
+              Dopilot needs desktop Chrome or Brave.{' '}
+              {IS_PRODUCTION ? (
+                <>
+                  <a href={EXTENSION_DOWNLOAD_URL} className="underline underline-offset-2">
+                    Download the extension
+                  </a>{' '}
+                  and unzip it to a folder you will keep. Open <code>chrome://extensions</code> or{' '}
+                  <code>brave://extensions</code>, turn on Developer mode, choose Load unpacked, and
+                  select that folder.
+                </>
+              ) : (
+                <>
+                  Run <code>pnpm build</code>, open <code>chrome://extensions</code> or{' '}
+                  <code>brave://extensions</code>, turn on Developer mode, and load{' '}
+                  <code>apps/extension/dist</code> unpacked.
+                </>
+              )}{' '}
+              This page will notice automatically.
             </>
           )}
         </Step>

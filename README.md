@@ -92,36 +92,61 @@ pnpm audit --prod
 
 ## Deploying
 
-Nothing here deploys by itself. The public product needs only the website and the extension:
-agent runs and Groq requests already happen inside the extension, with each user's own key, and the
-website never calls `apps/backend`. So no backend needs hosting for a first release. Its source stays
-for local MCP work.
+Nothing here deploys by itself. The public product needs only the website and the extension: agent
+runs and Groq requests happen inside the extension with each user's own key, and the website never calls
+`apps/backend`. **Render is not needed.** The backend's source stays for local MCP work.
 
-**Website (Vercel).** Import the repository with `apps/web` as the root directory; `apps/web/vercel.json`
-holds the monorepo build. Set `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS` to the extension's store ID. Vercel serves
-it over HTTPS, which browsers need for microphone access. The website has no other settings or secrets.
+### Website (Vercel)
 
-**Extension (Chrome Web Store, which Brave also installs from).**
+Import the GitHub repository, with these project settings. `apps/web/vercel.json` already holds the commands.
 
-1. Choose the website's final domain, because the extension is built to talk to that origin only.
-2. Build and check it. This stops if anything development-only is left in, and uploads nothing:
+| Setting                                  | Value                                                                 |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| Framework preset                         | Next.js                                                               |
+| Root Directory                           | `apps/web`                                                            |
+| Include files outside the root directory | On (the default)                                                      |
+| Install Command                          | `cd ../.. && pnpm install --frozen-lockfile`                          |
+| Build Command                            | `cd ../.. && pnpm build:packages && pnpm --filter @dopilot/web build` |
+| Output Directory                         | Leave as the default (`.next`)                                        |
+| Node.js version                          | 22.x or newer                                                         |
 
-   ```bash
-   DOPILOT_WEB_ORIGIN=https://your.domain pnpm release:extension
-   ```
+| Environment variable                         | Required | Value                                                                                       |
+| -------------------------------------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`          | Yes      | `doennedjpkdlajeeplfioihckoffjeld` for the manual ZIP. A production build stops without it. |
+| `NEXT_PUBLIC_DOPILOT_EXTENSION_DOWNLOAD_URL` | No       | Where visitors get the ZIP. Defaults to this repository's latest GitHub release.            |
 
-3. Upload `release/dopilot-<version>.zip`. The store then assigns the extension's permanent ID.
-4. Set that ID in `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS` and redeploy the website. Users never see or copy it.
+These are public and fixed at build time, so redeploy after changing one. No Groq key or other secret belongs
+on Vercel. Vercel serves HTTPS, which browsers need for microphone access.
 
-Run `pnpm build` afterwards to return `apps/extension/dist` to a local build.
+Only the origin the extension was built for can connect, so preview deployments show "Extension not connected".
+Browsers do not allow a wildcard on `vercel.app`.
 
-The extension ID comes from a signing key. The pinned key in `public/manifest.json` keeps local installs on
-one fixed ID, and is removed from release builds because the store refuses it and assigns its own. Local
-installs are unaffected. The website only talks to IDs it was built with, and the browser only lets a site
-talk to an extension whose manifest names it, so both sides have to agree.
+### Extension (manual ZIP)
 
-Before submitting, the store listing also needs a privacy policy address, screenshots, and a reason for
-each permission:
+Build it for the website's final origin. This stops if anything development-only is left in, and uploads nothing:
+
+```bash
+DOPILOT_WEB_ORIGIN=https://dopilot.vercel.app DOPILOT_KEEP_KEY=1 pnpm release:extension
+```
+
+Then run `pnpm build` to return `apps/extension/dist` to a local build. The result is
+`release/dopilot-<version>.zip`, which can be attached to a GitHub release. If the website's address changes,
+build and share the ZIP again.
+
+To install it:
+
+1. Unzip it to a folder you will keep. The browser loads from that folder each time it starts.
+2. Open `chrome://extensions` or `brave://extensions` and turn on Developer mode.
+3. Choose **Load unpacked** and select the folder, the one directly containing `manifest.json`.
+4. Open the Dopilot website. It connects by itself. Add a Groq key in the extension's settings.
+
+To update, replace the folder's contents and press reload on the extension's card. Extensions installed this
+way do not update automatically, and the browser may remind users that developer-mode extensions are enabled.
+
+The pinned key is what gives every manual install the same ID. It is public, and its private key was discarded,
+so this ZIP cannot become a signed `.crx`. For a store, leave out `DOPILOT_KEEP_KEY`, because stores refuse a key
+and assign their own ID, then add that ID to `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`. A store listing also needs a
+privacy policy address, screenshots, and a reason for each permission:
 
 | Permission            | Why                                                                                  |
 | --------------------- | ------------------------------------------------------------------------------------ |
@@ -134,6 +159,16 @@ each permission:
 | optional `tabs`       | Tab titles and addresses, when the user allows them                                  |
 | optional site access  | Asked for one site at a time                                                         |
 | optional `<all_urls>` | Browsers require this for screenshots, and Dopilot still limits it to approved sites |
+
+### Checking both together
+
+`pnpm verify:production` needs a built ZIP and a production website build. It runs them against each other over
+HTTPS in real browsers, with a local certificate and every address pointed at this machine.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The extension and website include third-party software under its own licenses,
+listed in `THIRD_PARTY_NOTICES.txt` and `third-party-notices.txt`. Run `pnpm notices` after changing dependencies.
 
 ## Layout
 
