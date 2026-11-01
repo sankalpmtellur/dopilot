@@ -1,8 +1,27 @@
-import { ExternalResponseSchema, PROTOCOL_VERSION } from '@dopilot/shared';
-import type { ExternalRequest, ExternalResponse } from '@dopilot/shared';
+import { commandError, ExternalResponseSchema, PROTOCOL_VERSION } from '@dopilot/shared';
+import type {
+  BrowserCommand,
+  CommandResult,
+  ExtensionState,
+  ExternalRequest,
+  ExternalResponse,
+} from '@dopilot/shared';
 
-export type ExtensionConnection =
-  { state: 'not_configured' | 'not_detected' } | { state: 'connected'; version: string };
+/** Fixed by the public key in the extension's manifest. */
+const DEFAULT_EXTENSION_ID = 'doennedjpkdlajeeplfioihckoffjeld';
+
+export function getExtensionId(): string {
+  return process.env.NEXT_PUBLIC_DOPILOT_EXTENSION_ID || DEFAULT_EXTENSION_ID;
+}
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+/** Closing a tab waits for the user to answer in the extension's confirmation window. */
+const CONFIRMATION_TIMEOUT_MS = 60_000;
+
+export type BridgeFailure = 'extension_unavailable' | 'timeout' | 'cancelled' | 'invalid_response';
+
+export type BridgeOutcome =
+  { ok: true; response: ExternalResponse } | { ok: false; failure: BridgeFailure };
 
 interface RuntimeWithMessaging {
   sendMessage(extensionId: string, message: unknown): Promise<unknown>;
@@ -19,25 +38,104 @@ function getRuntime(): RuntimeWithMessaging | undefined {
   return runtime?.sendMessage ? (runtime as RuntimeWithMessaging) : undefined;
 }
 
-async function send(extensionId: string, request: ExternalRequest): Promise<ExternalResponse> {
-  const runtime = getRuntime();
-  if (!runtime) throw new Error('Extension messaging is unavailable');
-  return ExternalResponseSchema.parse(await runtime.sendMessage(extensionId, request));
+type RequestBody = ExternalRequest extends infer R
+  ? R extends ExternalRequest
+    ? Omit<R, 'protocolVersion' | 'requestId'>
+    : never
+  : never;
+
+interface SendOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal | undefined;
 }
 
-export async function connectToExtension(
-  extensionId: string | undefined,
-): Promise<ExtensionConnection> {
-  if (!extensionId) return { state: 'not_configured' };
-  try {
-    const response = await send(extensionId, {
-      protocolVersion: PROTOCOL_VERSION,
-      type: 'external.ping',
-    });
-    return response.type === 'external.pong'
-      ? { state: 'connected', version: response.extensionVersion }
-      : { state: 'not_detected' };
-  } catch {
-    return { state: 'not_detected' };
-  }
+async function send(
+  extensionId: string,
+  body: RequestBody,
+  { timeoutMs = DEFAULT_TIMEOUT_MS, signal }: SendOptions = {},
+): Promise<BridgeOutcome> {
+  const runtime = getRuntime();
+  if (!runtime) return { ok: false, failure: 'extension_unavailable' };
+  if (signal?.aborted) return { ok: false, failure: 'cancelled' };
+
+  const requestId = crypto.randomUUID();
+  const notifyCancel = () => {
+    if (body.type === 'external.command') {
+      void send(extensionId, { type: 'external.cancel', targetRequestId: requestId });
+    }
+  };
+
+  return new Promise<BridgeOutcome>((resolve) => {
+    const finish = (outcome: BridgeOutcome) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const onAbort = () => {
+      notifyCancel();
+      finish({ ok: false, failure: 'cancelled' });
+    };
+    const timer = setTimeout(() => {
+      notifyCancel();
+      finish({ ok: false, failure: 'timeout' });
+    }, timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    runtime
+      .sendMessage(extensionId, { protocolVersion: PROTOCOL_VERSION, requestId, ...body })
+      .then((raw) => {
+        const parsed = ExternalResponseSchema.safeParse(raw);
+        const matches =
+          parsed.success &&
+          (parsed.data.requestId === requestId || parsed.data.type === 'external.rejected');
+        finish(
+          matches
+            ? { ok: true, response: parsed.data }
+            : { ok: false, failure: 'invalid_response' },
+        );
+      })
+      // Rejects when the extension is missing, disabled, or being reloaded.
+      .catch(() => finish({ ok: false, failure: 'extension_unavailable' }));
+  });
+}
+
+export async function fetchExtensionState(extensionId: string): Promise<ExtensionState | null> {
+  const outcome = await send(extensionId, { type: 'external.get_state' });
+  return outcome.ok && outcome.response.type === 'external.state' ? outcome.response.state : null;
+}
+
+export async function openExtensionSettings(extensionId: string): Promise<boolean> {
+  const outcome = await send(extensionId, { type: 'external.open_settings' });
+  return outcome.ok && outcome.response.type === 'external.ack';
+}
+
+const FAILURE_RESULTS: Record<BridgeFailure, CommandResult> = {
+  extension_unavailable: commandError(
+    'extension_unavailable',
+    'The Dopilot extension isn’t connected, so nothing was done.',
+  ),
+  timeout: commandError('timeout', 'The extension didn’t respond in time.'),
+  cancelled: commandError('cancelled', 'Stopped.'),
+  invalid_response: commandError(
+    'execution_failed',
+    'The extension sent an unexpected response. Check that it is up to date.',
+  ),
+};
+
+export async function sendBrowserCommand(
+  extensionId: string,
+  command: BrowserCommand,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
+  const outcome = await send(
+    extensionId,
+    { type: 'external.command', command },
+    {
+      signal,
+      timeoutMs: command.action === 'tab.close' ? CONFIRMATION_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
+    },
+  );
+  if (!outcome.ok) return FAILURE_RESULTS[outcome.failure];
+  if (outcome.response.type === 'external.command_result') return outcome.response.result;
+  return FAILURE_RESULTS.invalid_response;
 }

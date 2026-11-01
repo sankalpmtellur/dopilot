@@ -1,1 +1,4 @@
 @import 'tailwindcss';
+@import '@dopilot/ui/theme.css';
+
+@source '../';

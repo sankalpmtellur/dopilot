@@ -1,193 +1,220 @@
-# TASK 1 — DOPILOT: Complete Project Initialization
+# TASK 2 — DOPILOT: Frontend, Extension UI & Browser Controls
 
-## Project Overview
+## Objective
 
-Build **Dopilot**, an open-source, voice-controlled AI browser agent that operates Chrome and Brave.
+Continue developing the existing Dopilot monorepo.
 
-Users will visit our website, connect the browser extension, enter their own Groq API key, and instruct the AI to perform browser tasks.
+Build a polished, modern web application and browser-extension side panel. Implement secure Groq API key management and functional browser controls.
 
-The agent will eventually support voice commands, visual understanding, clicking, typing, scrolling, tab management, and autonomous multi-step workflows.
+The existing monorepo, frontend-extension communication, Fastify backend, and shared packages are already working.
 
-**This task is ONLY for project initialization, architecture, dependency installation, and validation. Do not implement actual agent functionality yet.**
+**Do not rebuild the project or change its architecture unnecessarily.**
 
-## 1. Technology Stack
+## 1. Frontend Website
 
-Use:
+Build a professional, responsive application using Next.js, React, TypeScript, Tailwind CSS, and Lucide icons.
 
-- **Frontend:** Next.js, TypeScript, Tailwind CSS, Lucide React.
-- **Backend:** Node.js, Fastify, TypeScript, Zod.
-- **Browser Extension:** Manifest V3, React, TypeScript, Vite, Chrome Extension APIs.
-- **AI:** Groq SDK, supporting text and vision-capable models.
-- **Agent Framework:** Custom TypeScript agent loop with structured tool calls.
-- **MCP:** Official MCP TypeScript SDK v2.
-- **Voice:** Browser Web Speech APIs, with graceful compatibility fallbacks.
-- **Monorepo:** pnpm workspaces.
-- **Testing:** Vitest, ESLint, Prettier.
-- **Database:** None initially. Keep the architecture ready for future persistence.
+Design requirements:
+- Minimal, premium AI-product aesthetic.
+- Light and dark themes.
+- Smooth, subtle animations.
+- Responsive desktop and mobile layouts.
+- Clean typography, spacing, and accessible components.
+- Avoid generic dashboard templates or excessive gradients.
 
-Only use free, open-source dependencies and services with usable free tiers.
+### Main interface
 
-## 2. Project Folder Structure
+Include:
 
-Create the following architecture:
+1. Dopilot branding and navigation.
+2. AI conversation interface with message history.
+3. Text command input.
+4. Microphone button (UI placeholder only).
+5. Extension connection status.
+6. Active browser tab information.
+7. Agent activity panel (prepared for future tasks).
+8. Settings panel.
+9. Groq API key configuration.
+10. Clear onboarding flow for first-time users.
 
-```text
-dopilot/
-├── apps/
-│   ├── web/
-│   │   ├── src/
-│   │   │   ├── app/
-│   │   │   ├── components/
-│   │   │   ├── hooks/
-│   │   │   ├── lib/
-│   │   │   └── styles/
-│   │   ├── public/
-│   │   └── package.json
-│   │
-│   ├── backend/
-│   │   ├── src/
-│   │   │   ├── config/
-│   │   │   ├── routes/
-│   │   │   ├── services/
-│   │   │   ├── agent/
-│   │   │   ├── ai/
-│   │   │   ├── mcp/
-│   │   │   ├── security/
-│   │   │   └── index.ts
-│   │   └── package.json
-│   │
-│   └── extension/
-│       ├── src/
-│       │   ├── background/
-│       │   ├── content/
-│       │   ├── sidepanel/
-│       │   ├── permissions/
-│       │   ├── messaging/
-│       │   └── lib/
-│       ├── public/
-│       └── package.json
-│
-├── packages/
-│   ├── shared/
-│   ├── agent-core/
-│   ├── browser-tools/
-│   └── mcp-tools/
-│
-├── docs/
-├── scripts/
-├── .env.example
-├── .gitignore
-├── package.json
-├── pnpm-workspace.yaml
-├── pnpm-lock.yaml
-└── README.md
-```
+Display accurate empty states. Do not simulate successful AI responses or browser actions.
 
-Adjust details where necessary to ensure compatibility and avoid unnecessary boilerplate.
+## 2. Groq API Key Integration
 
-## 3. Architecture Requirements
+Implement functional user-provided Groq API key management.
 
-Prepare clean boundaries between:
+Requirements:
 
-1. Web interface and user settings.
-2. Browser extension and browser interaction.
-3. AI model communication.
-4. Agent reasoning and execution loop.
-5. MCP tool integration.
-6. Shared message schemas and validation.
+- Users can enter their own Groq API key.
+- Save it locally in extension-owned storage, not our backend.
+- Never store keys in the website's localStorage or cookies.
+- Never log or expose keys in browser messages.
+- Provide Save, Remove, and Connection Test actions.
+- Show only masked key information.
+- Test the key using an inexpensive authenticated Groq API request.
+- Handle invalid, expired, and rate-limited keys.
+- Support changing keys without reinstalling the extension.
+- Never ship a shared API key.
 
-Design the browser extension to operate in both Chrome and Brave.
+Keep all Groq requests inside the extension.
 
-Use the extension's background service worker for browser commands and content scripts for webpage interaction.
+Use the installed Groq SDK where appropriate, with browser compatibility and security considerations.
 
-Prepare a browser side panel for future agent conversations.
+Implement configurable text-model selection using supported Groq models. Do not assume a particular model is permanently available.
 
-The web app and extension must have a secure, well-defined communication strategy. Do not assume a normal webpage can directly invoke privileged extension APIs.
+Do not make any AI requests except those explicitly triggered by the user's connection test.
 
-Use MCP v2 official packages and prepare the architecture for exposing browser capabilities through MCP-compatible tool interfaces.
+## 3. Browser Extension Side Panel
 
-Do not require Playwright, PyAutoGUI, Python, or a desktop helper for ordinary browser actions. Use native extension APIs.
+Replace the existing placeholder panel with a complete, compact Dopilot interface.
 
-## 4. Security Requirements
+Include:
 
-Prepare for:
+- Chat-style conversation layout.
+- Text command input.
+- Microphone button (disabled or marked Coming Soon).
+- Current tab display.
+- Extension/Groq connection indicators.
+- Recent browser actions.
+- Settings access.
+- Stop button for future agent execution.
 
-- User-provided Groq API keys.
-- No hardcoded credentials.
-- No API keys committed to Git.
-- No transmitting API keys to our own backend unless explicitly required and approved.
-- No secrets in logs.
-- Permission-based browser access.
-- Explicit confirmation for sensitive browser actions.
-- Agent stop/cancel controls.
-- Execution limits and loop protection.
-- Strong validation of AI-generated actions.
-- Protection against webpage prompt injection.
+The side panel should be usable independently of the website.
 
-Design API-key storage and model requests appropriately for a browser extension, recognizing that client-side keys cannot be completely protected from the device owner or malicious extensions.
+Reuse shared UI components where practical, while accommodating the narrow side-panel layout.
 
-Avoid requesting unnecessary browser permissions.
+## 4. Basic Browser Tools
 
-## 5. Setup and Installation
+Implement functional browser controls using Manifest V3 APIs.
 
-Complete the following:
+Support these explicit commands:
 
-1. Inspect the current `dopilot` directory.
-2. Preserve `note.txt`.
-3. Check installed Node.js, pnpm, and Git versions.
-4. Install missing development tools if necessary, using compatible free versions.
-5. Initialize the pnpm monorepo.
-6. Create all workspace packages.
-7. Install the necessary dependencies.
-8. Configure TypeScript across all packages.
-9. Configure ESLint and Prettier.
-10. Configure workspace imports and aliases.
-11. Prepare environment-variable examples.
-12. Add root development, build, lint, typecheck, and test scripts.
-13. Prepare the Manifest V3 extension configuration.
-14. Configure Next.js and Fastify.
-15. Prepare shared Zod message schemas.
-16. Add basic health-check endpoints and minimal application entry points.
+- Open a new tab.
+- Open a specified URL.
+- Switch between tabs.
+- List currently open tabs.
+- Reload the current tab.
+- Go back.
+- Go forward.
+- Close a tab, with confirmation.
 
-Keep the code lightweight and maintainable.
+For this task, implement these through deterministic command parsing or direct UI controls.
 
-## 6. Basic Verification
+**Do not use Groq to interpret natural-language commands yet.**
 
-Verify that:
+Examples:
 
-- Dependencies install successfully.
-- Frontend starts locally.
-- Backend starts locally.
-- Backend health check works.
-- Extension builds successfully.
-- Chrome/Brave can load the unpacked extension.
-- Shared packages compile.
-- TypeScript checks pass.
-- ESLint passes.
-- Basic smoke tests pass.
+- `new tab`
+- `open https://youtube.com`
+- `list tabs`
+- `reload`
+- `go back`
 
-Do not claim that browser installation or manual browser testing succeeded unless actually verified.
+Show actual results or errors in the interface.
 
-## 7. Important Restrictions
+Use the minimum necessary browser permissions. Never allow arbitrary scripts or unrestricted privileged actions from website messages.
 
-- Do not implement autonomous browsing yet.
-- Do not make live Groq API calls.
-- Do not implement voice commands yet.
-- Do not introduce paid services.
-- Do not deploy anything.
-- Do not create unnecessary features or complex infrastructure.
-- Do not commit or push to GitHub unless requested.
-- Do not create separate Markdown task-completion reports.
-- Preserve the original `note.txt` file.
+## 5. Website–Extension Communication
 
-## 8. Expected Final Response
+Extend the existing communication bridge.
 
-After implementation, give a concise summary containing:
+Requirements:
 
-1. Folder structure created.
-2. Tools and dependencies installed.
-3. Frontend and backend startup commands.
-4. Extension build and loading instructions.
-5. Verification results and any unresolved issues.
+- Website can display extension connection status.
+- Website can send validated browser commands.
+- Extension validates every incoming command.
+- Extension returns structured success/error responses.
+- Requests have unique IDs, timeouts, and cancellation handling.
+- Enforce strict origin checks.
+- Never send Groq API keys through the bridge.
+- Keep communication types in `packages/shared`.
+- Ensure the website cannot invoke arbitrary privileged extension APIs.
 
-**Goal:** A clean, professional, fully initialized Dopilot monorepo, ready for Task 2 — Frontend UI and Browser Extension Integration.
+Handle disconnected extensions gracefully.
+
+## 6. Extension Permissions & Security
+
+- Follow Manifest V3 security requirements.
+- Use least-privilege permissions.
+- Request optional permissions only when needed.
+- Block dangerous URL schemes and restricted pages.
+- Validate URL input before navigation.
+- Prevent access to internal browser settings and extension pages.
+- Require confirmation for destructive actions.
+- Never execute AI-generated JavaScript.
+- Prepare future safeguards for prompt injection.
+- Respect user-initiated tab actions.
+
+Do not request unrestricted website access by default.
+
+## 7. State Management
+
+Create clean state management for:
+
+- Extension connection.
+- Groq connection status.
+- Browser tabs.
+- Conversation UI.
+- Settings.
+- Browser action results.
+
+Keep architecture ready for future autonomous agent execution.
+
+Do not introduce a database for this task.
+
+## 8. Verification
+
+Implement and run tests covering:
+
+1. Groq API key save/remove and masking.
+2. Invalid API key and rate-limit handling.
+3. Browser command validation.
+4. URL restrictions.
+5. Extension message authorization.
+6. Tab creation and navigation.
+7. Structured action results.
+8. Disconnected extension handling.
+9. Frontend and side-panel rendering.
+10. Chrome and Brave compatibility.
+
+Run:
+
+- `pnpm build`
+- `pnpm typecheck`
+- `pnpm lint`
+- `pnpm test`
+
+Also manually test the website and extension in Brave if browser access is available.
+
+Do not claim manual tests passed unless verified.
+
+## 9. Restrictions
+
+- No autonomous AI agent loop yet.
+- No AI vision or screenshot analysis yet.
+- No microphone implementation yet.
+- No Playwright or PyAutoGUI.
+- No paid services.
+- No deployment yet.
+- No unnecessary backend changes.
+- Do not overwrite `note.txt`.
+- Do not create separate Markdown task reports.
+- Do not commit or push unless explicitly requested.
+
+## 10. Expected Outcome
+
+At the end, users should be able to:
+
+1. Open Dopilot's website.
+2. See their connected Brave/Chrome extension.
+3. Configure their own Groq API key.
+4. Open the Dopilot side panel.
+5. Type basic commands such as `new tab`.
+6. Watch Dopilot execute those browser actions.
+7. Review successful actions and errors.
+
+Keep the implementation production-minded, maintainable, and genuinely functional.
+
+Provide a concise final summary of implemented features, tests, and any remaining limitations.
+
+**Next milestone: Task 3 — Groq-powered natural-language understanding and autonomous agent execution loop.**

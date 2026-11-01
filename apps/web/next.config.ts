@@ -10,6 +10,7 @@ if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  devIndicators: false,
   outputFileTracingRoot: workspaceRoot,
   turbopack: { root: workspaceRoot },
 };
