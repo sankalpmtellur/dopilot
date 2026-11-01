@@ -6,6 +6,8 @@ import {
   parseCommand,
 } from '@dopilot/shared';
 import type {
+  AgentFailureKind,
+  AgentMetrics,
   AgentRunView,
   AgentTimelineEntry,
   BrowserCommand,
@@ -22,6 +24,11 @@ export interface ConsoleMessage {
   tabs?: TabInfo[];
   /** What the agent did to reach this answer. */
   steps?: AgentTimelineEntry[];
+  metrics?: AgentMetrics;
+  /** The instruction to run again, when trying again could help. */
+  retry?: string;
+  /** Whose problem this is, when that is not obvious from the message. */
+  hint?: string;
 }
 
 export interface ConfirmationRequest {
@@ -33,6 +40,7 @@ export interface ConfirmationRequest {
 type Action =
   | { type: 'add'; messages: ConsoleMessage[] }
   | { type: 'update'; id: string; changes: Partial<ConsoleMessage> }
+  | { type: 'remove'; id: string }
   | { type: 'hydrate'; messages: ConsoleMessage[] }
   | { type: 'clear' };
 
@@ -43,12 +51,16 @@ export function consoleReducer(state: ConsoleMessage[], action: Action): Console
     case 'add': {
       const known = new Set(state.map((message) => message.id));
       const added = action.messages.filter((message) => !known.has(message.id));
+      // Called on every state update, and a new array would redraw and save for nothing.
+      if (added.length === 0) return state;
       return [...state, ...added].slice(-MAX_MESSAGES);
     }
     case 'update':
       return state.map((message) =>
         message.id === action.id ? { ...message, ...action.changes } : message,
       );
+    case 'remove':
+      return state.filter((message) => message.id !== action.id);
     case 'hydrate': {
       // Messages typed before stored history finished loading are kept after it.
       const stored = new Set(action.messages.map((message) => message.id));
@@ -86,6 +98,16 @@ export interface CommandConsoleOptions {
   startTask?: (instruction: string) => Promise<string | null>;
   onClear?: () => void;
 }
+
+const FAILURE_HINTS: Partial<Record<AgentFailureKind, string>> = {
+  key: 'Check your Groq key in Dopilot’s settings.',
+  model: 'This came from the AI model, not your browser. Another model may work.',
+  rate_limit: 'This is Groq’s free-tier limit. It clears by itself.',
+  network: 'This looks like a connection problem.',
+};
+
+/** Retrying cannot help when the user said no or only they can get past something. */
+const NOT_RETRYABLE: ReadonlySet<AgentFailureKind> = new Set(['declined', 'blocked', 'key']);
 
 function createId(): string {
   return crypto.randomUUID();
@@ -171,7 +193,8 @@ export function useCommandConsole({
         id: messageId,
         changes: {
           text: result.message,
-          status: result.ok ? 'success' : 'error',
+          // Stopping something on purpose is not an error.
+          status: result.ok ? 'success' : result.code === 'cancelled' ? 'info' : 'error',
           ...(result.ok && result.tabs && { tabs: result.tabs }),
         },
       });
@@ -207,12 +230,17 @@ export function useCommandConsole({
 
       if (parsed.kind === 'unknown' && latest.current.startTask) {
         const instruction = text.trim();
+        const startingId = createId();
         dispatch({
           type: 'add',
-          messages: [{ id: createId(), role: 'user', text: instruction, status: 'info' }],
+          messages: [
+            { id: createId(), role: 'user', text: instruction, status: 'info' },
+            { id: startingId, role: 'dopilot', text: 'Starting…', status: 'pending' },
+          ],
         });
         void latest.current.startTask(instruction).then(
           (problem) => {
+            dispatch({ type: 'remove', id: startingId });
             if (!problem) return;
             dispatch({
               type: 'add',
@@ -220,6 +248,7 @@ export function useCommandConsole({
             });
           },
           () => {
+            dispatch({ type: 'remove', id: startingId });
             dispatch({
               type: 'add',
               messages: [
@@ -298,6 +327,13 @@ export function useCommandConsole({
           status:
             run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'info',
           steps: run.timeline,
+          ...(run.metrics && { metrics: run.metrics }),
+          ...(run.status === 'failed' &&
+            !(run.failureKind && NOT_RETRYABLE.has(run.failureKind)) && {
+              retry: run.instruction,
+            }),
+          ...(run.failureKind &&
+            FAILURE_HINTS[run.failureKind] && { hint: FAILURE_HINTS[run.failureKind] as string }),
         },
       ],
     });

@@ -2,10 +2,11 @@ import {
   DEFAULT_VISION_FALLBACK,
   GroqConnectionSchema,
   GroqModelSchema,
+  ModelIssueSchema,
   maskApiKey,
   validateApiKeyFormat,
 } from '@dopilot/shared';
-import type { GroqConnection, GroqModel, GroqStatus } from '@dopilot/shared';
+import type { GroqConnection, GroqModel, GroqStatus, ModelIssue } from '@dopilot/shared';
 import { z } from 'zod';
 
 const KEY_STORAGE = 'groqApiKey';
@@ -20,6 +21,7 @@ const SettingsSchema = z.object({
   selectedVisionModel: z.string().nullable().default(null),
   visionFallback: z.string().default(DEFAULT_VISION_FALLBACK),
   speechModels: z.array(GroqModelSchema).default([]),
+  modelIssues: z.record(z.string(), ModelIssueSchema).default({}),
 });
 type GroqSettings = z.infer<typeof SettingsSchema>;
 
@@ -31,6 +33,7 @@ const INITIAL_SETTINGS: GroqSettings = {
   selectedVisionModel: null,
   visionFallback: DEFAULT_VISION_FALLBACK,
   speechModels: [],
+  modelIssues: {},
 };
 
 /**
@@ -101,17 +104,27 @@ export async function recordConnectionTest(
       ...(other ?? {}),
       connection,
       models: nextModels,
+      // A fresh list is better evidence than an earlier refusal.
+      modelIssues: models ? {} : settings.modelIssues,
       selectedModel: stillAvailable ? settings.selectedModel : null,
     } satisfies GroqSettings,
   });
 }
 
-/** Deselects a model Groq has reported as unavailable, so the next task chooses automatically. */
-export async function dropSelectedModel(modelId: string): Promise<void> {
+/**
+ * Remembers that Groq refused a model. The user's choice is kept: one refusal may be an
+ * outage, and silently forgetting a preference is worse than asking them to change it.
+ */
+export async function recordModelIssue(
+  modelId: string,
+  reason: ModelIssue['reason'],
+): Promise<void> {
   const settings = await loadSettings();
-  if (settings.selectedModel !== modelId) return;
   await chrome.storage.local.set({
-    [SETTINGS_STORAGE]: { ...settings, selectedModel: null } satisfies GroqSettings,
+    [SETTINGS_STORAGE]: {
+      ...settings,
+      modelIssues: { ...settings.modelIssues, [modelId]: { reason, at: Date.now() } },
+    } satisfies GroqSettings,
   });
 }
 
@@ -147,6 +160,13 @@ export async function selectModel(modelId: string | null): Promise<void> {
   const known = modelId === null || settings.models.some((model) => model.id === modelId);
   if (!known) return;
   await chrome.storage.local.set({
-    [SETTINGS_STORAGE]: { ...settings, selectedModel: modelId } satisfies GroqSettings,
+    [SETTINGS_STORAGE]: {
+      ...settings,
+      selectedModel: modelId,
+      // Choosing it again means trying it again.
+      modelIssues: Object.fromEntries(
+        Object.entries(settings.modelIssues).filter(([id]) => id !== modelId),
+      ),
+    } satisfies GroqSettings,
   });
 }

@@ -22,6 +22,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify:extension": "node scripts/verify-extension.mjs",
+    "release:extension": "node scripts/release-extension.mjs",
     "mcp": "pnpm --silent --filter @dopilot/backend mcp"
   },
   "devDependencies": {

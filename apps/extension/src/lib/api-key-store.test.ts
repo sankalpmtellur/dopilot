@@ -59,6 +59,7 @@ describe('API key store', () => {
       selectedVisionModel: null,
       visionFallback: 'qwen/qwen3.8-27b',
       speechModels: [],
+      modelIssues: {},
     });
   });
 

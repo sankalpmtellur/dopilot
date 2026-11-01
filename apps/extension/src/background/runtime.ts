@@ -47,7 +47,8 @@ export async function buildState(
     tabDetailsAvailable,
     tabs,
     currentTabId,
-    groq,
+    // The website only needs to know a key is saved, not any part of it.
+    groq: source === 'website' && groq.maskedKey ? { ...groq, maskedKey: '••••••••' } : groq,
     agent,
     preferences,
     recentActions,

@@ -53,6 +53,10 @@ Exact commands run instantly, without AI or a key. Type `help` to list them: `ne
 `open <address>`, `list tabs`, `switch to tab <n>`, `reload`, `go back`, `go forward`, `close tab`,
 `close tab <n>`.
 
+Simple instructions such as `Open a new tab and go to YouTube` or `Switch to GitHub, then return to the
+previous tab` run straight away with no AI request, and need no key. Anything else goes to the AI. Both
+pass the same permission and safety checks.
+
 ## Voice and vision
 
 Press the microphone to speak: hold to talk, or tap to start and again to finish. Say "stop" to stop a
@@ -83,7 +87,53 @@ pnpm test
 pnpm format:check
 pnpm build
 pnpm verify:extension  # needs pnpm dev:web running; drives real Chrome and Brave with throwaway profiles, with Groq stubbed
+pnpm audit --prod
 ```
+
+## Deploying
+
+Nothing here deploys by itself. The public product needs only the website and the extension:
+agent runs and Groq requests already happen inside the extension, with each user's own key, and the
+website never calls `apps/backend`. So no backend needs hosting for a first release. Its source stays
+for local MCP work.
+
+**Website (Vercel).** Import the repository with `apps/web` as the root directory; `apps/web/vercel.json`
+holds the monorepo build. Set `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS` to the extension's store ID. Vercel serves
+it over HTTPS, which browsers need for microphone access. The website has no other settings or secrets.
+
+**Extension (Chrome Web Store, which Brave also installs from).**
+
+1. Choose the website's final domain, because the extension is built to talk to that origin only.
+2. Build and check it. This stops if anything development-only is left in, and uploads nothing:
+
+   ```bash
+   DOPILOT_WEB_ORIGIN=https://your.domain pnpm release:extension
+   ```
+
+3. Upload `release/dopilot-<version>.zip`. The store then assigns the extension's permanent ID.
+4. Set that ID in `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS` and redeploy the website. Users never see or copy it.
+
+Run `pnpm build` afterwards to return `apps/extension/dist` to a local build.
+
+The extension ID comes from a signing key. The pinned key in `public/manifest.json` keeps local installs on
+one fixed ID, and is removed from release builds because the store refuses it and assigns its own. Local
+installs are unaffected. The website only talks to IDs it was built with, and the browser only lets a site
+talk to an extension whose manifest names it, so both sides have to agree.
+
+Before submitting, the store listing also needs a privacy policy address, screenshots, and a reason for
+each permission:
+
+| Permission            | Why                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------ |
+| `activeTab`           | One-off access to a tab when the user invokes Dopilot                                |
+| `scripting`           | Reads and uses a page only on sites the user has approved                            |
+| `sidePanel`           | The main interface                                                                   |
+| `storage`             | The user's key, settings and the current task                                        |
+| `alarms`              | Ends tasks stuck waiting, even if the service worker has been stopped                |
+| `api.groq.com`        | Sends requests directly to the AI provider the user chose                            |
+| optional `tabs`       | Tab titles and addresses, when the user allows them                                  |
+| optional site access  | Asked for one site at a time                                                         |
+| optional `<all_urls>` | Browsers require this for screenshots, and Dopilot still limits it to approved sites |
 
 ## Layout
 

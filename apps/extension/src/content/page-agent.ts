@@ -53,6 +53,9 @@ const PAYMENT_FRAME = /stripe|paypal|braintree|adyen|checkout|payment|card|klarn
 
 const NAME_LIMIT = 120;
 const ACTION_SETTLE_MS = 500;
+const INTERACTIVE_BUDGET_CHARS = 3000;
+const LISTED_NAME_LIMIT = 70;
+const LISTED_HREF_LIMIT = 60;
 
 export interface PageAgentOptions {
   /** Layout does not exist in test environments, so tests can treat everything as laid out. */
@@ -413,6 +416,7 @@ export function createPageAgent(options: PageAgentOptions = {}) {
         ? `Clicked “${name}”. The page updated.`
         : `Clicked “${name}”, but nothing visibly changed. It may not have worked.`,
       pageChanged: domChanged,
+      ...(!domChanged && { noEffect: true }),
     };
   }
 
@@ -635,7 +639,7 @@ export function createPageAgent(options: PageAgentOptions = {}) {
     const entry: Record<string, unknown> = {
       ref: refFor(element),
       role: roleOf(element),
-      name: labelFor(element),
+      name: labelFor(element).slice(0, LISTED_NAME_LIMIT),
     };
     if (isDisabled(element)) entry.disabled = true;
     if (element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(element.type)) {
@@ -650,7 +654,12 @@ export function createPageAgent(options: PageAgentOptions = {}) {
       if (element.value && isTextEntry(element)) entry.filled = true;
     }
     const link = element.closest('a[href]') as HTMLAnchorElement | null;
-    if (link) entry.href = link.pathname === '/' ? link.origin : link.pathname;
+    if (link) {
+      entry.href = (link.pathname === '/' ? link.origin : link.pathname).slice(
+        0,
+        LISTED_HREF_LIMIT,
+      );
+    }
     return entry;
   }
 
@@ -670,11 +679,21 @@ export function createPageAgent(options: PageAgentOptions = {}) {
     };
     const ordered = [...elements.filter(onScreen), ...elements.filter((item) => !onScreen(item))];
 
-    const list = ordered.slice(0, limit).map(describeInteractive);
+    // Whole entries up to a budget, so the model never receives a list cut off mid-element.
+    const list: Record<string, unknown>[] = [];
+    let size = 0;
+    for (const element of ordered.slice(0, limit)) {
+      const entry = describeInteractive(element);
+      size += JSON.stringify(entry).length + 1;
+      if (size > INTERACTIVE_BUDGET_CHARS) break;
+      list.push(entry);
+    }
     return {
       ok: true,
       summary: `Found ${elements.length} controls${
-        elements.length > limit ? `, showing ${limit}. Use query to narrow it down` : ''
+        elements.length > list.length
+          ? `, showing the first ${list.length}. Use query to find others`
+          : ''
       }.`,
       data: { elements: list, securityCheck: hasChallenge() || undefined },
       untrusted: true,
@@ -977,6 +996,7 @@ export function createPageAgent(options: PageAgentOptions = {}) {
         ? 'Clicked. The page updated.'
         : 'Clicked, but nothing visibly changed. It may not have worked.',
       pageChanged: domChanged,
+      ...(!domChanged && { noEffect: true }),
     };
   }
 

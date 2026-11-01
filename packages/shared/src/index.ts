@@ -8,3 +8,4 @@ export * from './messages.js';
 export * from './url-policy.js';
 export * from './vision.js';
 export * from './voice.js';
+export * from './intent.js';

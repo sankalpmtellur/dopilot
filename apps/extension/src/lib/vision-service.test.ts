@@ -7,6 +7,7 @@ import type {
   ViewportState,
   VisualSnapshot,
 } from '@dopilot/shared';
+import { SCREENSHOT_REUSE_MS } from '@dopilot/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserApi } from './browser-commands';
 import { createToolService } from './tool-service';
@@ -34,7 +35,12 @@ let status: GroqStatus;
 let capture: ReturnType<typeof vi.fn>;
 let content: { send: ReturnType<typeof vi.fn>; canAccess: ReturnType<typeof vi.fn> };
 let image: { process: ReturnType<typeof vi.fn>; annotate: ReturnType<typeof vi.fn> };
-let preferences = { vision: true, speechFallback: false, voiceEngine: 'auto' as const };
+let preferences = {
+  vision: true,
+  speechFallback: false,
+  voiceEngine: 'auto' as const,
+  modelFallback: true,
+};
 let grounded: unknown;
 let describeFacts: unknown;
 let vision: ReturnType<typeof createVisionService>;
@@ -71,7 +77,7 @@ beforeEach(() => {
   time = 1000;
   replies = [];
   requests = [];
-  preferences = { vision: true, speechFallback: false, voiceEngine: 'auto' };
+  preferences = { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true };
   tab = { id: 1, windowId: 5, active: true, url: 'https://a.com/page?token=x', status: 'complete' };
   snapshot = {
     viewport,
@@ -453,7 +459,7 @@ describe('grounding visual targets', () => {
     });
     expect(result.data.targets).toEqual([]);
     expect(result.data.points).toEqual([]);
-    expect(result.summary).toMatch(/found no matching/);
+    expect(result.summary).toMatch(/Nothing was guessed/);
   });
 
   it('survives a reply that is not JSON, and invents no targets', async () => {
@@ -568,5 +574,105 @@ describe('grounding visual targets', () => {
     expect(
       await assess('click_visual_target', { screenshotId: data.screenshotId, pointId: 'p1' }),
     ).toMatchObject({ result: { code: 'security_challenge' } });
+  });
+});
+
+describe('fault injection: screenshots', () => {
+  it('discards an image if the user moved to another tab during capture', async () => {
+    capture.mockImplementation(async () => {
+      tab = { ...tab, active: false };
+      return IMAGE;
+    });
+    const result = await vision.assessCapture('analyze_screenshot', 1, context);
+    expect(result).toMatchObject({ decision: 'block', result: { code: 'tab_not_visible' } });
+    expect(image.process).not.toHaveBeenCalled();
+  });
+
+  it('discards an image if the page scrolled during capture, since masks would miss', async () => {
+    capture.mockImplementation(async () => {
+      snapshot = { ...snapshot, viewport: { ...viewport, scrollY: viewport.scrollY + 300 } };
+      return IMAGE;
+    });
+    const result = await vision.assessCapture('analyze_screenshot', 1, context);
+    expect(result).toMatchObject({ decision: 'block', result: { code: 'page_moving' } });
+    expect(image.process).not.toHaveBeenCalled();
+  });
+
+  it('discards an image if a secret field moved during capture', async () => {
+    capture.mockImplementation(async () => {
+      snapshot = { ...snapshot, secretBoxes: [[0, 400, 100, 20]] };
+      return IMAGE;
+    });
+    const result = await vision.assessCapture('analyze_screenshot', 1, context);
+    expect(result).toMatchObject({ decision: 'block', result: { code: 'page_moving' } });
+  });
+
+  it('sends the image the user approved, however long they took to decide', async () => {
+    const asked = await vision.assessCapture('analyze_screenshot', 1, context);
+    expect(asked).toMatchObject({ decision: 'approve' });
+    const shown = (asked as { screenshotId: string }).screenshotId;
+    time += SCREENSHOT_REUSE_MS + 5000;
+    capture.mockClear();
+    replies = ['Answer.'];
+    const result = await vision.execute('analyze_screenshot', { question: 'x' }, 1, context);
+    expect(capture).not.toHaveBeenCalled();
+    expect(result.ok && (result.data as { screenshotId: string }).screenshotId).toBe(shown);
+  });
+
+  it('asks again with a fresh image if the page changed while they decided', async () => {
+    const asked = await vision.assessCapture('analyze_screenshot', 1, context);
+    const shown = (asked as { screenshotId: string }).screenshotId;
+    snapshot = { ...snapshot, viewport: { ...viewport, fingerprint: 'different' } };
+    const again = await vision.assessCapture('analyze_screenshot', 1, context);
+    expect((again as { screenshotId: string }).screenshotId).not.toBe(shown);
+  });
+
+  it('keeps boxes and coordinates right when retrying with a smaller image', async () => {
+    image.process.mockImplementation(async (_url: string, options: { maxEdge?: number }) =>
+      options.maxEdge
+        ? { dataUrl: IMAGE, width: 640, height: 360 }
+        : { dataUrl: IMAGE, width: 1280, height: 720 },
+    );
+    await vision.assessCapture('get_visual_page_context', 1, context);
+    replies = [
+      new ModelError('image_rejected', 'Too big.'),
+      JSON.stringify({ description: 'd', targets: [], points: [{ x: 320, y: 180 }] }),
+    ];
+    const result = await vision.execute('get_visual_page_context', { question: 'x' }, 1, context);
+    // The marked-up image is what gets shrunk, and the model is told its new size.
+    expect(image.process.mock.lastCall?.[0]).toBe(IMAGE);
+    const retried = requests.at(-1)?.messages.at(-1)?.content as { text?: string }[];
+    expect(retried[0]?.text).toContain('640x360');
+    const { screenshotId, points } = (
+      result as { data: { screenshotId: string; points: { pointId: string }[] } }
+    ).data;
+    const target = await vision.ground(screenshotId, points[0]?.pointId ?? '', 1);
+    // 320 of 640 is halfway across, whichever image the model was looking at.
+    expect(target).toMatchObject({
+      viewportPoint: { x: viewport.width / 2, y: viewport.height / 2 },
+    });
+  });
+
+  it('says when a substitute model answered, rather than swapping quietly', async () => {
+    status = { ...status, selectedVisionModel: 'retired-vision' };
+    await vision.assessCapture('analyze_screenshot', 1, context);
+    replies = [new ModelError('model_unavailable', 'Gone.'), 'Answer.'];
+    const result = await vision.execute('analyze_screenshot', { question: 'x' }, 1, context);
+    expect(result).toMatchObject({
+      ok: true,
+      summary: expect.stringMatching(/retired-vision was not available/),
+    });
+  });
+
+  it('does not guess when the page has moved since the screenshot', async () => {
+    await vision.assessCapture('get_visual_page_context', 1, context);
+    replies = [JSON.stringify({ description: 'd', points: [{ x: 10, y: 10 }] })];
+    const result = await vision.execute('get_visual_page_context', { question: 'x' }, 1, context);
+    const { screenshotId, points } = (
+      result as { data: { screenshotId: string; points: { pointId: string }[] } }
+    ).data;
+    snapshot = { ...snapshot, viewport: { ...viewport, scrollY: viewport.scrollY + 200 } };
+    const target = await vision.ground(screenshotId, points[0]?.pointId ?? '', 1);
+    expect(target).toMatchObject({ failure: { code: 'stale_screenshot' } });
   });
 });

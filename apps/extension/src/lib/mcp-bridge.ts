@@ -1,9 +1,12 @@
-import { ToolCallSchema } from '@dopilot/shared';
+import { ToolCallSchema, toolFailure } from '@dopilot/shared';
 import type { ToolResult } from '@dopilot/shared';
 import { z } from 'zod';
 
 /** Local development only, and off until a person pastes a token in settings. */
 export const MCP_BRIDGE_ORIGIN = 'http://127.0.0.1:4319';
+declare const __DOPILOT_MCP__: boolean | undefined;
+/** Public builds leave this out, including from the security policy, unless asked for. */
+export const MCP_AVAILABLE = typeof __DOPILOT_MCP__ === 'undefined' ? true : __DOPILOT_MCP__;
 const STORAGE_KEY = 'mcpBridgeToken';
 const RETRY_DELAY_MS = 3000;
 
@@ -41,7 +44,11 @@ export function createMcpBridge({ runCall, fetch: fetchImpl, sleep }: McpBridgeD
     connected = true;
 
     const call = PendingCallSchema.parse(await response.json());
-    const result = await runCall(call.name, call.arguments);
+    // A failure here belongs to this call. Treating it as a lost connection would leave the
+    // caller waiting for a result that is never coming.
+    const result = await runCall(call.name, call.arguments).catch(() =>
+      toolFailure('execution_failed', 'That action could not be completed.'),
+    );
     await doFetch(`${MCP_BRIDGE_ORIGIN}/bridge/result`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -71,6 +78,7 @@ export function createMcpBridge({ runCall, fetch: fetchImpl, sleep }: McpBridgeD
     status: () => ({ enabled: token !== null, connected }),
 
     async configure(next: string | null): Promise<void> {
+      if (!MCP_AVAILABLE) return;
       token = next;
       abort?.abort();
       if (next) {
@@ -83,6 +91,7 @@ export function createMcpBridge({ runCall, fetch: fetchImpl, sleep }: McpBridgeD
 
     /** Restores a connection after the service worker restarts. */
     async restore(): Promise<void> {
+      if (!MCP_AVAILABLE) return;
       const stored = await chrome.storage.session.get(STORAGE_KEY);
       const value = stored[STORAGE_KEY];
       if (typeof value === 'string' && value) {

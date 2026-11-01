@@ -5,10 +5,17 @@ import {
   restrictStorageToTrustedContexts,
 } from '@/lib/api-key-store';
 import { testGroqKey } from '@/lib/groq-test';
-import { createExternalHandler } from '@/messaging/external';
+import { ALLOWED_WEB_ORIGINS, createExternalHandler } from '@/messaging/external';
 import { handleInternalMessage } from '@/messaging/internal';
 import { transcribeAudio } from '@/lib/speech-service';
-import { agentRunner, handleWindowClosed, mcpBridge, startAgentTask, vision } from './agent-host';
+import {
+  agentRunner,
+  handleWindowClosed,
+  mcpBridge,
+  noteDopilotTab,
+  startAgentTask,
+  vision,
+} from './agent-host';
 import { buildState, confirmations, runPanelCommand, runWebsiteCommand } from './runtime';
 
 // Listeners are registered synchronously so the browser can wake this worker for each event.
@@ -17,13 +24,20 @@ void restrictStorageToTrustedContexts();
 void agentRunner.resume();
 void mcpBridge.restore();
 
+const WATCHDOG_ALARM = 'dopilot-watchdog';
+// Timers die with the worker. An alarm wakes it, so a task cannot outlive its limits unseen.
+void chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === WATCHDOG_ALARM) void agentRunner.tick();
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
   confirmations.handleWindowClosed(windowId);
-  handleWindowClosed(windowId);
+  void handleWindowClosed(windowId);
 });
 
 const handleExternalMessage = createExternalHandler({
@@ -40,6 +54,7 @@ const handleExternalMessage = createExternalHandler({
 });
 
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (sender.origin && ALLOWED_WEB_ORIGINS.has(sender.origin)) noteDopilotTab(sender.tab?.id);
   void handleExternalMessage(message, { origin: sender.origin, tabId: sender.tab?.id })
     .then(sendResponse)
     .catch(() => sendResponse(undefined));

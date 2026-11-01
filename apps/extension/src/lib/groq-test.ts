@@ -15,6 +15,8 @@ export interface GroqTestOutcome {
   other: { visionModels: GroqModel[]; speechModels: GroqModel[] } | null;
 }
 
+const LIST_DEADLINE_MS = 15_000;
+
 function readRetryAfter(error: InstanceType<typeof Groq.APIError>): number | undefined {
   const headers = error.headers as Headers | Record<string, string> | undefined;
   const raw =
@@ -54,7 +56,13 @@ export async function testGroqKey(
   });
 
   try {
-    const { data } = await groq.models.list();
+    // The SDK's timeout ends at the response headers, so a stalled body needs its own limit.
+    const { data } = await Promise.race([
+      groq.models.list(),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Groq.APIConnectionTimeoutError()), LIST_DEADLINE_MS);
+      }),
+    ]);
     const models = rankToolModels(
       data
         .filter((model) => (model as { active?: boolean }).active !== false)

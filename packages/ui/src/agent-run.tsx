@@ -48,6 +48,16 @@ export function AgentTimeline({ entries }: { entries: AgentTimelineEntry[] }) {
   );
 }
 
+/** Seconds so far, so a slow step looks like work and not like a freeze. */
+function useElapsedSeconds(startedAt: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return Math.max(0, Math.round((now - startedAt) / 1000));
+}
+
 function statusTone(run: AgentRunView): StatusTone {
   return run.status === 'waiting_for_approval' ? 'warn' : 'pending';
 }
@@ -95,6 +105,7 @@ export function ScreenshotPreview({
 export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: AgentPanelProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const count = run.timeline.length;
+  const elapsed = useElapsedSeconds(run.startedAt);
   const looking = run.timeline.some(
     (entry) => entry.kind === 'vision' && entry.status === 'running',
   );
@@ -114,7 +125,7 @@ export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: Ag
           <StatusDot tone={statusTone(run)} />
           {agentStatusLabel(run.status)}
           <span className="font-normal text-faint">
-            {run.actionCount} of {run.maxActions} actions
+            {elapsed}s · {run.actionCount} of {run.maxActions} actions
           </span>
         </p>
         <Button variant="danger" aria-label="Stop task" onClick={onStop} className="shrink-0">

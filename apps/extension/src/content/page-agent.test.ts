@@ -101,7 +101,7 @@ describe('observing a page', () => {
     expect(await list('Item 79')).toHaveLength(1);
     const result = await agent.handle({ type: 'content.interactive', limit: 10 });
     expect(result.ok && (result.data as { elements: Item[] }).elements).toHaveLength(10);
-    expect(result.ok && result.summary).toMatch(/showing 10/);
+    expect(result.ok && result.summary).toMatch(/showing the first 10/);
   });
 
   it('keeps refs stable between looks, and unique per document', async () => {
@@ -583,5 +583,30 @@ describe('grounding a point', () => {
     const grounded = (await ground()) as { data: { ref: string } };
     await agent.handle({ type: 'content.click_point', ref: grounded.data.ref, x: 42, y: 24 });
     expect(clicks).toEqual([[42, 24]]);
+  });
+});
+
+describe('how much a page sends to the model', () => {
+  it('sends whole entries up to a budget, and says what it left out', async () => {
+    document.body.innerHTML = Array.from(
+      { length: 80 },
+      (_, index) =>
+        `<a href="/${'long-path/'.repeat(10)}${index}">${'A long link name '.repeat(8)}${index}</a>`,
+    ).join('');
+    const result = await agent.handle({ type: 'content.interactive', limit: 40 });
+    const { elements } = (result as { data: { elements: { name: string; href: string }[] } }).data;
+    expect(JSON.stringify(elements).length).toBeLessThanOrEqual(3000);
+    expect(elements.length).toBeGreaterThan(5);
+    expect(
+      elements.every((element) => element.name.length <= 70 && element.href.length <= 60),
+    ).toBe(true);
+    expect(result.ok && result.summary).toMatch(/showing the first \d+\. Use query/);
+  });
+
+  it('reports a click with no effect, so repeating it can be caught', async () => {
+    document.body.innerHTML = '<button>Inert</button>';
+    const [item] = await list();
+    const result = await agent.handle({ type: 'content.click', ref: item?.ref ?? '' });
+    expect(result).toMatchObject({ ok: true, noEffect: true });
   });
 });

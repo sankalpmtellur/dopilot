@@ -17,3 +17,4 @@ next-env.d.ts
 # Extension packaging keys must never be committed.
 *.pem
 *.crx
+release/

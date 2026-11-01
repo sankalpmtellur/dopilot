@@ -13,7 +13,7 @@ const page = (title, body) =>
   `<!doctype html><html><head><title>${title}</title></head><body>${body}</body></html>`;
 
 /** Local pages for each situation, so these checks never depend on real websites. */
-function startFixtures() {
+export function startFixtures() {
   const posts = [];
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
@@ -42,6 +42,20 @@ function startFixtures() {
         );
       case '/turing':
         return send(page('Turing test', '<h1>Turing test</h1><p>The imitation game.</p>'));
+      case '/busy':
+        return send(
+          page(
+            'Busy',
+            `<button>Stuck</button><script>onload=()=>setTimeout(()=>{const end=Date.now()+40000;while(Date.now()<end);},30)</script>`,
+          ),
+        );
+      case '/form-page':
+        return send(
+          page(
+            'Controls',
+            `<h1>Controls</h1><input aria-label="Name" /><select aria-label="Colour"><option>Red</option><option>Blue</option></select><button id="open" onclick="document.getElementById('m').hidden=false">Open dialog</button><div id="m" hidden role="dialog"><button onclick="this.parentElement.remove();document.title='Dialog closed'">Close dialog</button></div><div id="late"></div><script>setTimeout(()=>{const b=document.createElement('button');b.textContent='Late';document.getElementById('late').append(b)},600)</script>`,
+          ),
+        );
       case '/github':
         return send(page('GitHub fixture repo', '<h1>Repository</h1>'));
       case '/form':
@@ -99,13 +113,13 @@ function startFixtures() {
   });
 }
 
-const toolCall = (name, args = {}) => ({
+export const toolCall = (name, args = {}) => ({
   id: `call_${name}_${Math.random().toString(36).slice(2, 8)}`,
   type: 'function',
   function: { name, arguments: JSON.stringify(args) },
 });
-const tools = (...calls) => ({ tool_calls: calls });
-const say = (content) => ({ content });
+export const tools = (...calls) => ({ tool_calls: calls });
+export const say = (content) => ({ content });
 
 /** Reads a ref out of the tool results sent to the model, as a real model would. */
 function refFor(body, name) {
@@ -133,7 +147,7 @@ function tabIdFor(body, title) {
  * browser holds new workers at startup until interception is on, so no request can
  * slip through to the real API.
  */
-async function createGroqStub(browser) {
+export async function createGroqStub(browser) {
   const stub = { script: [], chatRequests: [], modelRequests: 0, unstubbed: 0, held: null };
 
   const fulfil = (sessionId, requestId, status, body, headers = []) =>
@@ -186,7 +200,7 @@ async function createGroqStub(browser) {
     if (step.status) {
       return fulfil(sessionId, requestId, step.status, step.body ?? { error: {} }, step.headers);
     }
-    const message = typeof step === 'function' ? step(parsed) : step;
+    const message = typeof step === 'function' ? await step(parsed) : step;
     return fulfil(sessionId, requestId, 200, {
       choices: [{ message: { role: 'assistant', content: null, ...message } }],
     });
@@ -229,7 +243,7 @@ async function createGroqStub(browser) {
 }
 
 /** A copy of the build with its optional permissions granted, since dialogs cannot be clicked. */
-function grantedCopy(extensionPath) {
+export function grantedCopy(extensionPath) {
   const copy = mkdtempSync(join(tmpdir(), 'dopilot-verify-copy-'));
   cpSync(extensionPath, copy, { recursive: true });
   const manifestPath = join(copy, 'manifest.json');
@@ -303,7 +317,29 @@ export async function verifyAgent(name, executable, extensionPath) {
       return send({ type: 'panel.start_agent', instruction });
     }
 
-    const noKey = await send({ type: 'panel.start_agent', instruction: 'Open YouTube' });
+    // --- Simple instructions need no AI, and so no key ---
+    const noAiStart = await send({
+      type: 'panel.start_agent',
+      instruction: `Open a new tab and go to ${fixtures.base.replace('http://', '')}/github.`,
+    });
+    const noAi = await waitForStatus(['completed', 'failed', 'cancelled']);
+    const opened = await pageByUrl('/github');
+    check(
+      'A simple instruction runs without a key or any AI request',
+      noAiStart.error === null &&
+        noAi?.status === 'completed' &&
+        Boolean(opened) &&
+        noAi.metrics?.modelRequests === 0 &&
+        groq.chatRequests.length + groq.modelRequests === 0,
+      `${noAi?.summary} in ${noAi?.metrics?.totalMs}ms`,
+    );
+    check(
+      'It opened exactly one tab',
+      (await state()).tabs.filter((tab) => tab.url?.includes('/github')).length === 1,
+    );
+    await browser.send('Target.closeTarget', { targetId: opened.targetId });
+
+    const noKey = await send({ type: 'panel.start_agent', instruction: 'Summarize this page' });
     check(
       'Refuses to start without a key, and says why',
       /Groq API key/.test(noKey.error ?? ''),
@@ -866,7 +902,7 @@ export async function verifyAgent(name, executable, extensionPath) {
     );
 
     // --- Follow-ups ---
-    await start('Open the wiki', [say('I opened the wiki for you earlier.')]);
+    await start('Tell me about the wiki', [say('The wiki is the shared fixture site.')]);
     await finished();
     groq.script = [say('Sure.')];
     groq.chatRequests.length = 0;
@@ -875,8 +911,8 @@ export async function verifyAgent(name, executable, extensionPath) {
     const followUp = JSON.stringify(groq.chatRequests[0].messages);
     check(
       'Follow-ups include earlier context, within bounds',
-      followUp.includes('Open the wiki') &&
-        followUp.includes('opened the wiki for you') &&
+      followUp.includes('Tell me about the wiki') &&
+        followUp.includes('the shared fixture site') &&
         followUp.includes('and close that tab'),
     );
 

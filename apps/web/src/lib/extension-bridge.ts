@@ -7,11 +7,40 @@ import type {
   ExternalResponse,
 } from '@dopilot/shared';
 
-/** Fixed by the public key in the extension's manifest. */
-const DEFAULT_EXTENSION_ID = 'doennedjpkdlajeeplfioihckoffjeld';
+/** Fixed by the public key in the development manifest. */
+const DEV_EXTENSION_ID = 'doennedjpkdlajeeplfioihckoffjeld';
+
+/**
+ * The extension IDs this deployment will talk to, in order of preference. A store listing
+ * has its own ID, different from an unpacked copy, and it is the same in Chrome and Brave.
+ * It is set when the site is built, so users never copy an ID, and the browser still only
+ * lets this origin talk to an extension whose manifest names it.
+ */
+export function getExtensionIds(
+  // The singular name is the older setting, still in existing local .env files.
+  configured: string | undefined = process.env.NEXT_PUBLIC_DOPILOT_EXTENSION_IDS ||
+    process.env.NEXT_PUBLIC_DOPILOT_EXTENSION_ID,
+  environment: string | undefined = process.env.NODE_ENV,
+): string[] {
+  const ids = (configured ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => /^[a-p]{32}$/.test(id));
+  if (environment !== 'production' && !ids.includes(DEV_EXTENSION_ID)) ids.push(DEV_EXTENSION_ID);
+  return ids;
+}
 
 export function getExtensionId(): string {
-  return process.env.NEXT_PUBLIC_DOPILOT_EXTENSION_ID || DEFAULT_EXTENSION_ID;
+  return getExtensionIds()[0] ?? '';
+}
+
+/** Which of the known extensions is installed here, if any. */
+export async function findExtensionId(ids: string[] = getExtensionIds()): Promise<string | null> {
+  for (const id of ids) {
+    const outcome = await send(id, { type: 'external.ping' }, { timeoutMs: 2000 });
+    if (outcome.ok && outcome.response.type === 'external.pong') return id;
+  }
+  return null;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -143,8 +172,12 @@ export async function transcribeThroughExtension(
 }
 
 export async function stopAgentTask(extensionId: string): Promise<boolean> {
-  const outcome = await send(extensionId, { type: 'external.agent_stop' });
-  return outcome.ok && outcome.response.type === 'external.ack';
+  // Stop has to work. A first attempt can fail while the worker wakes up.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const outcome = await send(extensionId, { type: 'external.agent_stop' });
+    if (outcome.ok && outcome.response.type === 'external.ack') return true;
+  }
+  return false;
 }
 
 export async function resetAgent(extensionId: string): Promise<void> {

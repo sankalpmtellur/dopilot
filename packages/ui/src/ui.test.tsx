@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActionList } from './activity.js';
 import { AgentPanel } from './agent-run.js';
 import { CommandComposer } from './composer.js';
-import { ConfirmBar, ConversationView } from './conversation.js';
+import { ConfirmBar, ConversationView, describeMetrics } from './conversation.js';
 import { TabList } from './tabs.js';
-import { useCommandConsole, UNKNOWN_TEXT } from './use-command-console.js';
+import { consoleReducer, useCommandConsole, UNKNOWN_TEXT } from './use-command-console.js';
 import type { ExecuteCommand } from './use-command-console.js';
 
 afterEach(cleanup);
@@ -309,7 +309,7 @@ describe('AgentPanel', () => {
     expect(screen.getByText('Open Wikipedia and search for AI')).toBeTruthy();
     expect(screen.getByText('Opening https://wikipedia.org')).toBeTruthy();
     expect(screen.getByText('Opened.')).toBeTruthy();
-    expect(screen.getByText('2 of 15 actions')).toBeTruthy();
+    expect(screen.getByText(/2 of 15 actions/)).toBeTruthy();
   });
 
   it('stops when asked', async () => {
@@ -357,5 +357,36 @@ describe('AgentPanel', () => {
     render(<AgentPanel run={waiting} onStop={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
     expect(screen.getByRole('alertdialog').textContent).toMatch(/Dopilot side panel or window/);
+  });
+});
+
+describe('consoleReducer', () => {
+  it('returns the same state when nothing new was added, so nothing redraws or saves', () => {
+    const state = [{ id: 'a', role: 'dopilot' as const, text: 'x', status: 'info' as const }];
+    expect(consoleReducer(state, { type: 'add', messages: [state[0] as never] })).toBe(state);
+  });
+});
+
+describe('describeMetrics', () => {
+  const base = {
+    firstStepMs: 10,
+    totalMs: 1234,
+    modelRequests: 0,
+    modelMs: 0,
+    toolCalls: 1,
+    observeMs: 0,
+    actMs: 1,
+    visionMs: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    deterministic: true,
+  };
+  it('says when no AI was needed', () => {
+    expect(describeMetrics(base)).toBe('1.2s · no AI needed');
+  });
+  it('counts requests and tokens', () => {
+    expect(
+      describeMetrics({ ...base, modelRequests: 2, promptTokens: 1000, completionTokens: 200 }),
+    ).toBe('1.2s · 2 AI requests · 1,200 tokens');
   });
 });

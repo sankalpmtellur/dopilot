@@ -14,6 +14,13 @@ export const VoiceEngineChoiceSchema = z.enum(['auto', 'browser', 'groq']);
 export type VoiceEngineChoice = z.infer<typeof VoiceEngineChoiceSchema>;
 
 export const MAX_RECORDING_MS = 20_000;
+/**
+ * Little more than an empty container. Kept low, because a quick spoken "stop" must never be
+ * thrown away, and silence is already caught by `MAX_NO_SPEECH_PROBABILITY`.
+ */
+export const MIN_AUDIO_BASE64_CHARS = 300;
+/** Above this a segment is noise. Whisper still returns text for it, often "Thank you." */
+export const MAX_NO_SPEECH_PROBABILITY = 0.6;
 /** About 20 seconds of speech at the recording's low bitrate, with room to spare. */
 export const MAX_AUDIO_BASE64_CHARS = 500_000;
 export const AUDIO_TYPES = ['audio/webm', 'audio/ogg', 'audio/mp4'] as const;
@@ -29,6 +36,8 @@ export const PreferencesSchema = z.strictObject({
   /** Off until the user agrees to audio being sent to Groq. */
   speechFallback: z.boolean(),
   voiceEngine: VoiceEngineChoiceSchema,
+  /** Whether another model may stand in when the selected one is unavailable. */
+  modelFallback: z.boolean().default(true),
 });
 export type Preferences = z.infer<typeof PreferencesSchema>;
 
@@ -36,6 +45,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   vision: true,
   speechFallback: false,
   voiceEngine: 'auto',
+  modelFallback: true,
 };
 
 export type VoiceEngine = 'browser' | 'groq' | 'none';
@@ -63,7 +73,9 @@ const WAKE_PREFIX = /^\s*(?:(?:hey|ok|okay|hi)[\s,]+)?(?:do ?pilot|the pilot)\b[
 
 /** Tidies a transcript. A spoken "Dopilot," is an address, not part of the command. */
 export function normalizeTranscript(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().replace(WAKE_PREFIX, '').trim();
+  const clean = text.replace(/\s+/g, ' ').trim().replace(WAKE_PREFIX, '').trim();
+  // Speech services sometimes return only punctuation for noise, which is not a command.
+  return /[\p{L}\p{N}]/u.test(clean) ? clean : '';
 }
 
 /** Stopping must work without the AI, so it is recognized before anything else. */

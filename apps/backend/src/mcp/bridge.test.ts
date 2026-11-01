@@ -117,3 +117,30 @@ describe('tool calls', () => {
     expect(next.statusCode).toBe(204);
   });
 });
+
+describe('bridge reliability', () => {
+  it('forgets a call the caller has given up on, so it cannot run later', async () => {
+    const instance = setup({ callTimeoutMs: 30 });
+    await instance.app.inject({ method: 'GET', url: '/bridge/next', headers: auth });
+    const result = await instance.execute('close_tab', {});
+    expect(result).toMatchObject({ ok: false, code: 'timeout' });
+    const next = await instance.app.inject({ method: 'GET', url: '/bridge/next', headers: auth });
+    expect(next.statusCode).toBe(204);
+  });
+
+  it('refuses requests with a wrong token, a foreign origin or a rebound host', async () => {
+    const instance = setup();
+    const get = (headers: Record<string, string>) =>
+      instance.app.inject({ method: 'GET', url: '/bridge/next', headers });
+    expect((await get({ host: '127.0.0.1:4319' })).statusCode).toBe(401);
+    expect((await get({ ...auth, authorization: 'Bearer wrong' })).statusCode).toBe(401);
+    expect((await get({ ...auth, origin: 'https://evil.example' })).statusCode).toBe(403);
+    expect((await get({ ...auth, host: 'evil.example' })).statusCode).toBe(403);
+  });
+
+  it('fails fast when no extension is connected', async () => {
+    const instance = setup();
+    const result = await instance.execute('get_tabs', {});
+    expect(result).toMatchObject({ ok: false, code: 'extension_not_connected' });
+  });
+});

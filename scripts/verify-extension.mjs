@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PROTOCOL_VERSION } from '../packages/shared/dist/index.js';
 import { verifyAgent } from './lib/agent-scenarios.mjs';
+import { verifyReliability } from './lib/reliability-scenarios.mjs';
 import { verifyVoiceAndVision } from './lib/vision-scenarios.mjs';
 import { createChecks, createPageTools, launch, setScreenshotDir, sleep } from './lib/browser.mjs';
 
@@ -317,8 +318,10 @@ async function verifyProduct(name, executable) {
 
       const stateText = JSON.stringify(await externalSend({ type: 'external.get_state' }));
       check(
-        'Bridge state contains only the masked key',
-        stateText.includes('gsk_••••••••abcd') && !stateText.includes(FAKE_KEY),
+        'Bridge state says a key is saved, and shows no part of it',
+        stateText.includes('"configured":true') &&
+          !stateText.includes('abcd') &&
+          !stateText.includes(FAKE_KEY),
       );
 
       await clickButton(web, 'Open settings');
@@ -612,12 +615,18 @@ for (const [name, executable] of Object.entries(browsers)) {
     console.log(`\n${name}: not installed, skipped`);
     continue;
   }
-  // VERIFY_ONLY=vision runs just the voice and vision checks, while working on them.
-  if (process.env.VERIFY_ONLY !== 'vision') {
+  // VERIFY_ONLY=vision or reliability runs just those checks, while working on them.
+  const only = process.env.VERIFY_ONLY;
+  if (!only) {
     ok = (await verifyProduct(name, executable)) && ok;
     ok = (await verifyTabDetails(name, executable)) && ok;
     ok = (await verifyAgent(name, executable, extensionPath)) && ok;
   }
-  ok = (await verifyVoiceAndVision(name, executable, extensionPath)) && ok;
+  if (!only || only === 'reliability') {
+    ok = (await verifyReliability(name, executable, extensionPath)) && ok;
+  }
+  if (!only || only === 'vision') {
+    ok = (await verifyVoiceAndVision(name, executable, extensionPath)) && ok;
+  }
 }
 process.exit(ok ? 0 : 1);

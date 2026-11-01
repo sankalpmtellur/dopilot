@@ -1,6 +1,8 @@
 import { describeToolCall, validateToolCall } from '@dopilot/browser-tools';
 import type {
   AgentApproval,
+  AgentFailureKind,
+  AgentMetrics,
   AgentRunView,
   AgentSource,
   AgentTimelineEntry,
@@ -12,16 +14,24 @@ import {
   addConversationTurn,
   buildInitialMessages,
   formatToolResult,
+  MALFORMED_CALL_NUDGE,
   trimMessages,
+  UNVERIFIED_CLAIM_NUDGE,
 } from './context.js';
 import type { ConversationTurn } from './context.js';
-import { DEFAULT_EXECUTION_LIMITS, isRepetitive, recordCallSignature } from './limits.js';
+import {
+  backoffMs,
+  DEFAULT_EXECUTION_LIMITS,
+  isRepetitive,
+  recordCallSignature,
+} from './limits.js';
 import type { ExecutionLimits } from './limits.js';
 import { ModelError } from './model.js';
 import type { ModelClient, ModelMessage, ModelToolDefinition } from './model.js';
 
 /** Everything needed to continue a run after the service worker has been stopped. */
 export interface AgentRun extends AgentRunView {
+  metrics: AgentMetrics;
   messages: ModelMessage[];
   pendingCalls: ToolCall[];
   /** The call being executed, if any. After a restart its outcome is unknown. */
@@ -41,6 +51,24 @@ export interface AgentRun extends AgentRunView {
   approvalKey: string | null;
   approvalStartedAt: number | null;
   approvalWaitMs: number;
+  /** Bumped by every action that worked, so looking again afterwards is not a repeat. */
+  progressEpoch: number;
+  totalFailures: number;
+  /** Actions in a row that ran but changed nothing. */
+  noEffectActions: number;
+  /** How hard to cut the conversation, raised when Groq says a request is too large. */
+  trimLevel: number;
+  /** Corrections already sent to the model, so a stubborn one cannot loop on them. */
+  nudges: number;
+  toolSuccesses: number;
+  lastToolFailed: boolean;
+  /** Page data has reached the model, so an address it builds may carry that data. */
+  pageDataRead: boolean;
+  /** Running a plan that needs no AI. Cleared if the AI has to step in to recover. */
+  planned: boolean;
+  /** Why the plan stopped, if it did. */
+  planFailure: { message: string; recoverable: boolean; kind: AgentFailureKind } | null;
+  lastProgressAt: number;
 }
 
 export interface ToolContext {
@@ -49,6 +77,9 @@ export interface ToolContext {
   source: AgentSource;
   currentTabId: number | null;
   protectedTabId?: number | null;
+  /** What the user asked for, so an address can be compared with it. */
+  instruction?: string;
+  pageDataRead?: boolean;
   signal: AbortSignal;
 }
 
@@ -76,6 +107,17 @@ export interface AgentToolbox {
     context: ToolContext,
   ): Promise<ToolAssessment>;
   execute(name: string, args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
+  /**
+   * Tool calls for an instruction simple enough to need no AI, or null. They run through
+   * exactly the same checks as calls from a model.
+   */
+  planSimple?(
+    instruction: string,
+    source: AgentSource,
+    protectedTabId?: number | null,
+  ): Promise<{ name: string; arguments: Record<string, unknown> }[] | null>;
+  /** How long a call may run, when it legitimately waits for longer than most. */
+  toolTimeoutMs?(name: string, args: Record<string, unknown>): number | undefined;
   /** A short description of the current browser state for the first request. */
   describeContext(
     source: AgentSource,
@@ -94,7 +136,9 @@ export interface RunStore {
 export interface AgentRunnerDeps {
   model: () => Promise<ModelClient>;
   /** The model to use, skipping any already tried. Null when none are left. */
-  chooseModel: (tried: string[]) => Promise<string | null>;
+  chooseModel: (tried: string[]) => Promise<string | ModelChoice | null>;
+  /** Whether the AI can be used at all. Tasks needing no AI run regardless. */
+  canUseModel?: () => Promise<boolean>;
   toolbox: AgentToolbox;
   store: RunStore;
   limits?: ExecutionLimits;
@@ -108,11 +152,28 @@ export interface AgentRunnerDeps {
   onModelProblem?: (kind: ModelError['kind'], model: string | null) => void;
 }
 
+/** `notice` tells the user something they would want to know, such as a substitute model. */
+export type ModelChoice = { id: string; notice?: string } | { refusal: string };
+
 const MAX_TIMELINE_ENTRIES = 40;
 const MAX_CALLS_PER_RESPONSE = 5;
 const MAX_SUMMARY_CHARS = 4000;
 const MAX_DETAIL_CHARS = 240;
 const RETRY_BACKOFF_MS = 1000;
+const MAX_TRIM_LEVEL = 2;
+const MAX_NUDGES = 2;
+const PLAN_TIMEOUT_MS = 3000;
+const NO_KEY_MESSAGE = 'Add your Groq API key in Dopilot’s settings first.';
+
+/** A reply saying something was done. Checked against what tools actually reported. */
+const CLAIMS_ACTION =
+  /\b(opened|navigated|switched|clicked|typed|scrolled|closed|searched|reloaded|submitted|went to|i have (opened|gone|done)|done)\b/i;
+const ADMITS_FAILURE =
+  /\b(can(no|')t|could ?n[o']t|unable|failed|did ?n[o']t|was ?n[o']t|not|nothing)\b/i;
+const LEAKED_CALL = /<\/?function\b|<tool_call>|^\s*\{\s*"(name|tool|function)"\s*:/i;
+
+class StepTimeout extends Error {}
+class StepCancelled extends Error {}
 const VISUAL_TOOLS = new Set([
   'capture_visible_tab',
   'analyze_screenshot',
@@ -127,8 +188,72 @@ const CONTENT_TOOLS = new Set([
   'get_visual_page_context',
 ]);
 
+function emptyMetrics(): AgentMetrics {
+  return {
+    firstStepMs: null,
+    totalMs: null,
+    modelRequests: 0,
+    modelMs: 0,
+    toolCalls: 0,
+    observeMs: 0,
+    actMs: 0,
+    visionMs: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    deterministic: false,
+  };
+}
+
+/**
+ * Runs one step of the loop so that it can never hold the loop open. The result of a step
+ * that is abandoned is ignored, whatever it eventually does, and it is told to stop.
+ */
+function bounded<T>(
+  step: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  parent: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    if (parent.aborted) {
+      reject(new StepCancelled());
+      return;
+    }
+    const onAbort = () => {
+      cleanup();
+      controller.abort();
+      reject(new StepCancelled());
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      controller.abort();
+      reject(new StepTimeout());
+    }, ms);
+    const cleanup = () => {
+      clearTimeout(timer);
+      parent.removeEventListener('abort', onAbort);
+    };
+    parent.addEventListener('abort', onAbort, { once: true });
+    step(controller.signal).then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error instanceof Error ? error : new Error('Step failed'));
+      },
+    );
+  });
+}
+
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    // An abort that already happened will not fire again, so it has to be checked for.
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     signal.addEventListener(
       'abort',
@@ -158,6 +283,8 @@ export function toRunView(run: AgentRun): AgentRunView {
     approval: run.approval,
     summary: run.summary,
     error: run.error,
+    failureKind: run.failureKind ?? null,
+    metrics: run.metrics,
   };
 }
 
@@ -173,8 +300,10 @@ export class AgentRunner {
   private readonly createId: () => string;
   private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   private current: AgentRun | null = null;
-  private abort: AbortController | null = null;
-  private looping: Promise<void> | null = null;
+  /** The loop driving a run. A cancelled run's stuck loop must not block the next task. */
+  private active: { runId: string; abort: AbortController; done: Promise<void> } | null = null;
+  private loading: Promise<AgentRun | null> | null = null;
+  private starting = false;
 
   constructor(private readonly deps: AgentRunnerDeps) {
     this.limits = deps.limits ?? DEFAULT_EXECUTION_LIMITS;
@@ -183,8 +312,28 @@ export class AgentRunner {
     this.sleep = deps.sleep ?? defaultSleep;
   }
 
+  /**
+   * Every entry point shares one copy of the stored run. A worker woken by Stop also runs
+   * `resume`, and separate copies would let Stop end one while the other kept acting.
+   */
+  private load(): Promise<AgentRun | null> {
+    if (this.current) return Promise.resolve(this.current);
+    this.loading ??= this.deps.store.loadRun().then(
+      (run) => {
+        this.loading = null;
+        this.current ??= run;
+        return this.current;
+      },
+      (error: unknown) => {
+        this.loading = null;
+        throw error;
+      },
+    );
+    return this.loading;
+  }
+
   async view(): Promise<AgentRunView | null> {
-    const run = this.current ?? (await this.deps.store.loadRun());
+    const run = await this.load();
     return run ? toRunView(run) : null;
   }
 
@@ -194,68 +343,119 @@ export class AgentRunner {
     source: AgentSource,
     protectedTabId: number | null = null,
   ): Promise<string | null> {
-    const existing = this.current ?? (await this.deps.store.loadRun());
-    if (existing && isAgentActive(existing.status)) {
-      return 'A task is already running. Stop it first.';
+    // Checked and claimed together, so a double submit cannot start two tasks.
+    if (this.starting) return 'A task is already running. Stop it first.';
+    this.starting = true;
+    try {
+      const existing = await this.load();
+      if (existing && isAgentActive(existing.status)) {
+        return 'A task is already running. Stop it first.';
+      }
+
+      const never = new AbortController().signal;
+      let setup;
+      try {
+        setup = await bounded(
+          () =>
+            Promise.all([
+              this.deps.toolbox.describeContext(source, protectedTabId),
+              this.deps.store.loadConversation(),
+            ]),
+          this.limits.assessTimeoutMs,
+          never,
+        );
+      } catch {
+        return 'The browser didn’t respond, so the task was not started. Try again.';
+      }
+      const [{ text, currentTabId }, history] = setup;
+
+      const plan = await bounded(
+        async () =>
+          (await this.deps.toolbox.planSimple?.(instruction, source, protectedTabId)) ?? null,
+        PLAN_TIMEOUT_MS,
+        never,
+      ).catch(() => null);
+
+      if (!plan && this.deps.canUseModel && !(await this.deps.canUseModel())) {
+        return NO_KEY_MESSAGE;
+      }
+
+      const startedAt = this.now();
+      const calls: ToolCall[] = (plan ?? []).map((call, index) => ({
+        id: `plan_${index + 1}`,
+        name: call.name,
+        arguments: call.arguments,
+      }));
+      const messages = buildInitialMessages(instruction, history, text);
+      if (calls.length > 0)
+        messages.push({ role: 'assistant', content: '', toolCalls: [...calls] });
+
+      this.current = {
+        id: this.createId(),
+        instruction,
+        source,
+        status: calls.length > 0 ? 'executing' : 'thinking',
+        notice: null,
+        model: null,
+        startedAt,
+        finishedAt: null,
+        actionCount: 0,
+        readPageContent: false,
+        visionCalls: 0,
+        maxActions: this.limits.maxActions,
+        timeline: [],
+        approval: null,
+        summary: null,
+        error: null,
+        failureKind: null,
+        messages,
+        pendingCalls: calls,
+        inflightCallId: null,
+        recentCalls: [],
+        modelCalls: 0,
+        consecutiveFailures: 0,
+        rateLimitWaits: 0,
+        resumes: 0,
+        triedModels: [],
+        currentTabId,
+        protectedTabId,
+        approvedKey: null,
+        approvalKey: null,
+        approvalStartedAt: null,
+        approvalWaitMs: 0,
+        progressEpoch: 0,
+        totalFailures: 0,
+        noEffectActions: 0,
+        trimLevel: 0,
+        nudges: 0,
+        toolSuccesses: 0,
+        lastToolFailed: false,
+        pageDataRead: false,
+        planned: calls.length > 0,
+        planFailure: null,
+        lastProgressAt: startedAt,
+        metrics: { ...emptyMetrics(), deterministic: calls.length > 0 },
+      };
+      await this.persist();
+      this.runLoop(this.current);
+      return null;
+    } finally {
+      this.starting = false;
     }
-
-    const [{ text, currentTabId }, history] = await Promise.all([
-      this.deps.toolbox.describeContext(source, protectedTabId),
-      this.deps.store.loadConversation(),
-    ]);
-
-    this.current = {
-      id: this.createId(),
-      instruction,
-      source,
-      status: 'thinking',
-      notice: null,
-      model: null,
-      startedAt: this.now(),
-      finishedAt: null,
-      actionCount: 0,
-      readPageContent: false,
-      visionCalls: 0,
-      maxActions: this.limits.maxActions,
-      timeline: [],
-      approval: null,
-      summary: null,
-      error: null,
-      messages: buildInitialMessages(instruction, history, text),
-      pendingCalls: [],
-      inflightCallId: null,
-      recentCalls: [],
-      modelCalls: 0,
-      consecutiveFailures: 0,
-      rateLimitWaits: 0,
-      resumes: 0,
-      triedModels: [],
-      currentTabId,
-      protectedTabId,
-      approvedKey: null,
-      approvalKey: null,
-      approvalStartedAt: null,
-      approvalWaitMs: 0,
-    };
-    await this.persist();
-    this.runLoop();
-    return null;
   }
 
   /** The emergency stop. Takes effect immediately and aborts any Groq request. */
   async stop(): Promise<void> {
-    const run = this.current ?? (await this.deps.store.loadRun());
+    const run = await this.load();
     if (!run || !isAgentActive(run.status)) return;
-    this.current = run;
     this.finish(run, 'cancelled', { summary: 'Stopped. No further actions will run.' });
-    this.abort?.abort();
+    this.active?.abort.abort();
     await this.persist();
   }
 
   async resolveApproval(id: string, approved: boolean): Promise<void> {
-    const run = this.current ?? (await this.deps.store.loadRun());
+    const run = await this.load();
     if (!run || run.status !== 'waiting_for_approval' || run.approval?.id !== id) return;
-    this.current = run;
 
     const call = run.pendingCalls[0];
     const entry = run.timeline.findLast((item) => item.kind === 'approval');
@@ -281,10 +481,19 @@ export class AgentRunner {
         ),
       );
       run.pendingCalls.shift();
+      run.lastToolFailed = true;
+      if (run.planned) {
+        run.planFailure = {
+          message: 'You declined, so that was not done.',
+          recoverable: false,
+          kind: 'declined',
+        };
+        this.abandonPlan(run, run.planFailure.message, false);
+      }
     }
     run.approvalKey = null;
     await this.persist();
-    this.runLoop();
+    this.runLoop(run);
   }
 
   /**
@@ -292,18 +501,23 @@ export class AgentRunner {
    * A call that was mid-flight is not repeated, since it may already have happened.
    */
   async resume(): Promise<void> {
-    if (this.current) return;
-    const run = await this.deps.store.loadRun();
-    if (!run || !isAgentActive(run.status)) return;
-    this.current = run;
+    const run = await this.load();
+    if (!run || !isAgentActive(run.status) || this.active?.runId === run.id) return;
 
-    if (run.status === 'waiting_for_approval') return;
+    if (run.status === 'waiting_for_approval') {
+      // The worker may have slept since asking, so the question may need showing again.
+      if (run.approval) this.deps.onApproval?.(run.approval, run);
+      return;
+    }
 
     run.resumes += 1;
     if (run.resumes > this.limits.maxResumes) {
-      this.finish(run, 'failed', {
-        error: 'The browser kept stopping this task, so it was ended for safety.',
-      });
+      this.finish(
+        run,
+        'failed',
+        { error: 'The browser kept stopping this task, so it was ended for safety.' },
+        'internal',
+      );
       await this.persist();
       return;
     }
@@ -324,15 +538,60 @@ export class AgentRunner {
         entry.status = 'failed';
         entry.detail = 'Interrupted by the browser. Outcome unknown.';
       }
+      // A plan cannot judge an unknown outcome, so whatever remains is not safe to run blind.
+      if (run.planned) this.abandonPlan(run, 'The browser interrupted that step.');
     }
     run.inflightCallId = null;
     await this.persist();
-    this.runLoop();
+    this.runLoop(run);
+  }
+
+  /**
+   * Called on a timer, independent of the loop, so no task can stay open forever: not when
+   * nobody answers an approval, not when the worker died mid-step, not when the loop hangs.
+   */
+  async tick(): Promise<void> {
+    const run = await this.load();
+    if (!run || !isAgentActive(run.status)) return;
+    const now = this.now();
+
+    if (run.status === 'waiting_for_approval') {
+      const waited = now - (run.approvalStartedAt ?? now);
+      if (waited >= this.limits.maxApprovalWaitMs) {
+        this.finish(
+          run,
+          'failed',
+          {
+            error: 'Nobody answered the approval, so the task was stopped. Nothing else was done.',
+          },
+          'declined',
+        );
+        await this.persist();
+      } else if (run.approval) {
+        this.deps.onApproval?.(run.approval, run);
+      }
+      return;
+    }
+
+    if (this.active?.runId !== run.id) {
+      await this.resume();
+      return;
+    }
+    if (now - run.lastProgressAt >= this.limits.maxStallMs) {
+      this.finish(
+        run,
+        'failed',
+        { error: 'This task stopped responding, so it was ended. Check the page before retrying.' },
+        'internal',
+      );
+      this.active.abort.abort();
+      await this.persist();
+    }
   }
 
   /** Forgets the last run and the conversation so far. Does nothing during a task. */
   async reset(): Promise<void> {
-    const run = this.current ?? (await this.deps.store.loadRun());
+    const run = await this.load();
     if (run && isAgentActive(run.status)) return;
     this.current = null;
     await this.deps.store.clear();
@@ -340,39 +599,49 @@ export class AgentRunner {
 
   /** Resolves when the loop next goes idle. For tests and shutdown. */
   async idle(): Promise<void> {
-    await this.looping;
+    await this.active?.done;
   }
 
-  private runLoop(): void {
-    this.looping ??= this.loop().finally(() => {
-      this.looping = null;
+  private runLoop(run: AgentRun): void {
+    // A loop already driving this run will see the change. Any other is for a run that
+    // has ended, and is left to finish on its own so that it cannot hold this one up.
+    if (this.active?.runId === run.id) return;
+    const abort = new AbortController();
+    const entry = { runId: run.id, abort, done: Promise.resolve() };
+    this.active = entry;
+    entry.done = this.loop(run, abort.signal).finally(() => {
+      if (this.active !== entry) return;
+      this.active = null;
+      // An approval answered just as the loop was leaving must not be lost.
+      if (this.current === run && this.shouldContinue(run)) this.runLoop(run);
     });
   }
 
-  private async loop(): Promise<void> {
-    const run = this.current;
-    if (!run) return;
-    this.abort = new AbortController();
-
+  private async loop(run: AgentRun, signal: AbortSignal): Promise<void> {
     try {
       while (this.shouldContinue(run)) {
         const limit = this.limitReached(run);
         if (limit) {
-          this.finish(run, 'failed', { error: limit });
+          this.finish(run, 'failed', { error: limit }, 'limit');
         } else if (run.pendingCalls.length > 0) {
-          await this.processNextCall(run);
+          await this.processNextCall(run, signal);
+        } else if (run.planned) {
+          await this.finishPlan(run);
         } else {
-          await this.think(run);
+          await this.think(run, signal);
         }
         await this.persist();
       }
     } catch {
       if (this.shouldContinue(run)) {
-        this.finish(run, 'failed', { error: 'Something went wrong, so the task was stopped.' });
-        await this.persist();
+        this.finish(
+          run,
+          'failed',
+          { error: 'Something went wrong, so the task was stopped.' },
+          'internal',
+        );
       }
-    } finally {
-      this.abort = null;
+      await this.persist().catch(() => undefined);
     }
   }
 
@@ -388,39 +657,118 @@ export class AgentRunner {
     if (run.modelCalls >= this.limits.maxModelCalls) {
       return 'This task used too many AI requests, so it was stopped to protect your quota.';
     }
+    if (run.totalFailures >= this.limits.maxTotalFailures) {
+      return 'Too many steps of this task failed, so it was stopped. Check the page and try again.';
+    }
     return null;
   }
 
-  private async think(run: AgentRun): Promise<void> {
-    const signal = this.abortSignal();
+  /** Everything planned has run. Reports it, or hands over to the AI to recover. */
+  private async finishPlan(run: AgentRun): Promise<void> {
+    const failure = run.planFailure;
+    if (!failure) {
+      const done = run.timeline.filter((entry) => entry.status === 'done' && entry.detail);
+      const text = done.map((entry) => entry.detail).join(' ') || 'Done.';
+      this.finish(run, 'completed', { summary: text.slice(0, MAX_SUMMARY_CHARS) });
+      await this.remember(run, text);
+      return;
+    }
+    const canRecover =
+      failure.recoverable && (this.deps.canUseModel ? await this.deps.canUseModel() : true);
+    if (!canRecover) {
+      this.finish(run, 'failed', { error: failure.message }, failure.kind);
+      return;
+    }
+    run.planned = false;
+    run.planFailure = null;
+    run.metrics.deterministic = false;
+    this.addEntry(run, 'retry', 'done', 'Asking the AI to work around that');
+  }
+
+  private abandonPlan(run: AgentRun, message: string, recoverable = true): void {
+    run.planFailure ??= { message, recoverable, kind: 'page' };
+    for (const skipped of run.pendingCalls.splice(0)) {
+      this.pushToolResult(
+        run,
+        skipped,
+        toolFailure('skipped', 'Skipped because an earlier step did not work.'),
+      );
+    }
+  }
+
+  private async think(run: AgentRun, signal: AbortSignal): Promise<void> {
     run.status = 'thinking';
     await this.persist();
+    if (!isAgentActive(run.status)) return;
 
-    const modelId = await this.deps.chooseModel(run.triedModels);
-    if (!modelId) {
-      this.finish(run, 'failed', {
-        error: run.triedModels.length
-          ? 'None of the available Groq models could run this. Choose another in settings.'
-          : 'No Groq model is available. Test your key in settings.',
-      });
+    let choice;
+    try {
+      choice = await bounded(
+        () => this.deps.chooseModel(run.triedModels),
+        this.limits.modelChoiceTimeoutMs,
+        signal,
+      );
+    } catch (error) {
+      if (error instanceof StepCancelled) return;
+      choice = null;
+    }
+    const chosen = typeof choice === 'string' ? { id: choice } : choice;
+    if (!chosen || 'refusal' in chosen) {
+      this.finish(
+        run,
+        'failed',
+        {
+          error:
+            chosen?.refusal ??
+            (run.triedModels.length
+              ? 'None of the available Groq models could run this. Choose another in settings.'
+              : 'No Groq model is available. Test your key in settings.'),
+        },
+        'model',
+      );
       return;
+    }
+    const modelId = chosen.id;
+    if (chosen.notice && run.model !== modelId) {
+      this.addEntry(run, 'retry', 'done', chosen.notice);
     }
     run.model = modelId;
     run.modelCalls += 1;
 
+    const requestStartedAt = this.now();
     let response;
     try {
-      const client = await this.deps.model();
-      response = await client.complete({
-        model: modelId,
-        messages: trimMessages(run.messages),
-        tools: this.deps.toolbox.definitions,
+      response = await bounded(
+        async (stepSignal) => {
+          const client = await this.deps.model();
+          return client.complete({
+            model: modelId,
+            messages: trimMessages(run.messages, run.trimLevel),
+            tools: this.deps.toolbox.definitions,
+            signal: stepSignal,
+          });
+        },
+        this.limits.modelCallTimeoutMs,
         signal,
-      });
+      );
     } catch (error) {
-      await this.handleModelError(run, error, modelId);
+      run.metrics.modelRequests += 1;
+      run.metrics.modelMs += this.now() - requestStartedAt;
+      if (error instanceof StepCancelled) return;
+      await this.handleModelError(
+        run,
+        error instanceof StepTimeout
+          ? new ModelError('timeout', 'Groq took too long to respond.')
+          : error,
+        modelId,
+        signal,
+      );
       return;
     }
+    run.metrics.modelRequests += 1;
+    run.metrics.modelMs += this.now() - requestStartedAt;
+    run.metrics.promptTokens += response.usage?.promptTokens ?? 0;
+    run.metrics.completionTokens += response.usage?.completionTokens ?? 0;
 
     if (!isAgentActive(run.status)) return;
     run.notice = null;
@@ -428,22 +776,43 @@ export class AgentRunner {
 
     if (response.toolCalls.length === 0) {
       const text = response.text?.trim();
-      if (text) {
-        this.finish(run, 'completed', { summary: text.slice(0, MAX_SUMMARY_CHARS) });
-        await this.remember(run, text);
-      } else {
+      if (!text) {
         this.countFailure(run, 'The AI returned an empty reply.');
+        return;
       }
+      const correction = this.correctionFor(run, text);
+      if (correction) {
+        run.nudges += 1;
+        run.messages.push({ role: 'assistant', content: text.slice(0, MAX_DETAIL_CHARS) });
+        run.messages.push({ role: 'user', content: correction });
+        return;
+      }
+      this.finish(run, 'completed', { summary: text.slice(0, MAX_SUMMARY_CHARS) });
+      await this.remember(run, text);
       return;
     }
 
     const calls = response.toolCalls.slice(0, MAX_CALLS_PER_RESPONSE);
     run.messages.push({ role: 'assistant', content: response.text ?? '', toolCalls: calls });
     run.pendingCalls.push(...calls);
-    run.messages = trimMessages(run.messages);
+    run.messages = trimMessages(run.messages, run.trimLevel);
   }
 
-  private async handleModelError(run: AgentRun, error: unknown, modelId: string): Promise<void> {
+  /** A final reply is checked against what tools reported before it is believed. */
+  private correctionFor(run: AgentRun, text: string): string | null {
+    if (run.nudges >= MAX_NUDGES) return null;
+    if (LEAKED_CALL.test(text)) return MALFORMED_CALL_NUDGE;
+    const claims = CLAIMS_ACTION.test(text) && !ADMITS_FAILURE.test(text);
+    if (claims && (run.toolSuccesses === 0 || run.lastToolFailed)) return UNVERIFIED_CLAIM_NUDGE;
+    return null;
+  }
+
+  private async handleModelError(
+    run: AgentRun,
+    error: unknown,
+    modelId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     if (!isAgentActive(run.status)) return;
     const modelError =
       error instanceof ModelError ? error : new ModelError('server', 'The AI request failed.');
@@ -455,7 +824,7 @@ export class AgentRunner {
       case 'invalid_key':
       case 'forbidden':
         this.deps.onModelProblem?.(modelError.kind, modelId);
-        this.finish(run, 'failed', { error: modelError.message });
+        this.finish(run, 'failed', { error: modelError.message }, 'key');
         return;
 
       case 'model_unavailable':
@@ -465,12 +834,15 @@ export class AgentRunner {
         return;
 
       case 'rate_limited': {
-        const waitMs = (modelError.retryAfterSeconds ?? 5) * 1000;
+        const waitMs =
+          modelError.retryAfterSeconds === undefined
+            ? backoffMs(run.rateLimitWaits + 1, 5000)
+            : modelError.retryAfterSeconds * 1000;
         if (
           run.rateLimitWaits >= this.limits.maxRateLimitWaits ||
           waitMs > this.limits.maxRateLimitWaitMs
         ) {
-          this.finish(run, 'failed', { error: modelError.message });
+          this.finish(run, 'failed', { error: modelError.message }, 'rate_limit');
           return;
         }
         run.rateLimitWaits += 1;
@@ -479,26 +851,47 @@ export class AgentRunner {
         run.notice = `Rate limited by Groq. Retrying in ${Math.ceil(waitMs / 1000)}s.`;
         this.addEntry(run, 'retry', 'done', run.notice);
         await this.persist();
-        await this.sleep(waitMs, this.abortSignal());
+        await this.sleep(waitMs, signal);
         return;
       }
 
       case 'request_too_large':
-        this.finish(run, 'failed', { error: modelError.message });
+        // Older page content is what makes a request large, so try again with less of it.
+        if (run.trimLevel < MAX_TRIM_LEVEL) {
+          run.trimLevel += 1;
+          run.modelCalls -= 1;
+          this.addEntry(
+            run,
+            'retry',
+            'done',
+            'That was too much for the model, retrying with less',
+          );
+          return;
+        }
+        this.finish(run, 'failed', { error: modelError.message }, 'model');
         return;
 
-      default:
+      case 'bad_tool_call':
+        run.messages.push({ role: 'user', content: MALFORMED_CALL_NUDGE });
         this.addEntry(run, 'retry', 'done', modelError.message);
-        this.countFailure(run, modelError.message);
+        this.countFailure(run, modelError.message, 'model');
+        return;
+
+      default: {
+        const kind =
+          modelError.kind === 'network' || modelError.kind === 'timeout' ? 'network' : 'model';
+        this.addEntry(run, 'retry', 'done', modelError.message);
+        this.countFailure(run, modelError.message, kind);
         // A short wait, so a brief network problem does not use up every attempt at once.
         if (isAgentActive(run.status)) {
           await this.persist();
-          await this.sleep(RETRY_BACKOFF_MS * run.consecutiveFailures, this.abortSignal());
+          await this.sleep(backoffMs(run.consecutiveFailures, RETRY_BACKOFF_MS), signal);
         }
+      }
     }
   }
 
-  private async processNextCall(run: AgentRun): Promise<void> {
+  private async processNextCall(run: AgentRun, signal: AbortSignal): Promise<void> {
     const call = run.pendingCalls[0];
     if (!call) return;
 
@@ -516,7 +909,12 @@ export class AgentRunner {
 
     const { tool, args } = validation;
     const label = describeToolCall(tool.name, args);
-    const signature = JSON.stringify([tool.name, args]);
+    // Looking again after something has changed is progress. Repeating an action is not.
+    const signature = JSON.stringify([
+      tool.name,
+      args,
+      tool.effect === 'observe' ? run.progressEpoch : 0,
+    ]);
 
     // Skipped once approved, so asking the user does not count as repeating.
     if (!run.approvedKey && isRepetitive(run.recentCalls, signature, this.limits)) {
@@ -535,31 +933,18 @@ export class AgentRunner {
     if (!run.approvedKey) run.recentCalls = recordCallSignature(run.recentCalls, signature);
 
     if (tool.effect === 'act' && run.actionCount >= this.limits.maxActions) {
-      this.finish(run, 'failed', {
-        error: `This task reached the limit of ${this.limits.maxActions} actions, so it was stopped.`,
-      });
+      this.finish(
+        run,
+        'failed',
+        {
+          error: `This task reached the limit of ${this.limits.maxActions} actions, so it was stopped.`,
+        },
+        'limit',
+      );
       return;
     }
 
-    const context: ToolContext = {
-      runId: run.id,
-      source: run.source,
-      currentTabId: run.currentTabId,
-      protectedTabId: run.protectedTabId,
-      signal: this.abortSignal(),
-    };
-
-    // Runs again after approval: the page may have changed while the user was deciding.
-    const assessment = await this.deps.toolbox.assess(tool.name, args, context);
-    if (!isAgentActive(run.status)) return;
-
-    if (assessment.decision === 'block') {
-      this.addEntry(run, 'error', 'failed', label, this.resultDetail(assessment.result));
-      if (this.endsTask(run, call, assessment.result)) return;
-      this.completeCall(run, call, assessment.result, true);
-      return;
-    }
-
+    // Before assessing, because assessing a screenshot already takes one.
     if (tool.cost === 'vision' && run.visionCalls >= this.limits.maxVisionCalls) {
       this.addEntry(run, 'error', 'failed', label, 'Screenshot limit reached for this task.');
       this.completeCall(
@@ -572,6 +957,43 @@ export class AgentRunner {
         ),
         false,
       );
+      return;
+    }
+
+    const contextFor = (stepSignal: AbortSignal): ToolContext => ({
+      runId: run.id,
+      source: run.source,
+      currentTabId: run.currentTabId,
+      protectedTabId: run.protectedTabId,
+      instruction: run.instruction,
+      pageDataRead: run.pageDataRead,
+      signal: stepSignal,
+    });
+
+    // Runs again after approval: the page may have changed while the user was deciding.
+    let assessment: ToolAssessment;
+    try {
+      assessment = await bounded(
+        (stepSignal) => this.deps.toolbox.assess(tool.name, args, contextFor(stepSignal)),
+        this.limits.assessTimeoutMs,
+        signal,
+      );
+    } catch (error) {
+      if (error instanceof StepCancelled) return;
+      assessment = {
+        decision: 'block',
+        result: toolFailure(
+          'page_unresponsive',
+          'The page did not respond, so nothing was done. It may be busy, or showing a dialog.',
+        ),
+      };
+    }
+    if (!isAgentActive(run.status)) return;
+
+    if (assessment.decision === 'block') {
+      this.addEntry(run, 'error', 'failed', label, this.resultDetail(assessment.result));
+      if (this.endsTask(run, call, assessment.result)) return;
+      this.completeCall(run, call, assessment.result, true);
       return;
     }
 
@@ -591,14 +1013,43 @@ export class AgentRunner {
     if (tool.cost === 'vision') run.visionCalls += 1;
     if (tool.effect === 'act') run.actionCount += 1;
     run.inflightCallId = call.id;
+    run.metrics.firstStepMs ??= this.now() - run.startedAt;
     await this.persist();
+    // Stop may have arrived while saving, and nothing may act after Stop.
+    if (!isAgentActive(run.status)) {
+      entry.status = 'skipped';
+      return;
+    }
 
+    const toolStartedAt = this.now();
     let result: ToolResult;
     try {
-      result = await this.deps.toolbox.execute(tool.name, args, context);
-    } catch {
-      result = toolFailure('execution_failed', 'That action could not be completed.');
+      result = await bounded(
+        (stepSignal) => this.deps.toolbox.execute(tool.name, args, contextFor(stepSignal)),
+        this.deps.toolbox.toolTimeoutMs?.(tool.name, args) ?? this.limits.toolTimeoutMs,
+        signal,
+      );
+    } catch (error) {
+      if (error instanceof StepCancelled) {
+        entry.status = 'skipped';
+        run.inflightCallId = null;
+        return;
+      }
+      result =
+        error instanceof StepTimeout
+          ? tool.effect === 'act'
+            ? toolFailure(
+                'outcome_unknown',
+                'This did not finish in time, so its outcome is unknown. Look at the page before doing anything else, and do not repeat it blindly.',
+              )
+            : toolFailure('tool_timeout', 'This took too long, so it was abandoned.')
+          : toolFailure('execution_failed', 'That action could not be completed.');
     }
+    const elapsed = this.now() - toolStartedAt;
+    run.metrics.toolCalls += 1;
+    if (tool.cost === 'vision') run.metrics.visionMs += elapsed;
+    else if (tool.effect === 'act') run.metrics.actMs += elapsed;
+    else run.metrics.observeMs += elapsed;
     run.inflightCallId = null;
     if (!isAgentActive(run.status)) {
       entry.status = 'skipped';
@@ -607,15 +1058,30 @@ export class AgentRunner {
 
     entry.status = result.ok ? 'done' : 'failed';
     if (result.ok && CONTENT_TOOLS.has(tool.name)) run.readPageContent = true;
+    if (result.ok && result.untrusted && tool.effect === 'observe') run.pageDataRead = true;
     entry.detail = this.resultDetail(result);
     if (result.ok && result.currentTabId !== undefined) run.currentTabId = result.currentTabId;
+    run.lastToolFailed = !result.ok;
+
+    if (result.ok) {
+      run.toolSuccesses += 1;
+      if (tool.effect === 'act') run.progressEpoch += 1;
+    }
 
     if (this.endsTask(run, call, result)) return;
 
-    this.completeCall(run, call, result, !result.ok && result.recoverable);
+    // An action that keeps changing nothing is a failure, however politely it is reported.
+    run.noEffectActions = result.ok && result.noEffect ? run.noEffectActions + 1 : 0;
+    const stalled = run.noEffectActions >= this.limits.maxIdenticalCalls;
+    this.completeCall(run, call, result, (!result.ok && result.recoverable) || stalled);
+
+    if (run.planned && !result.ok) {
+      this.abandonPlan(run, result.message, result.recoverable);
+      return;
+    }
 
     // Later calls in this batch were planned against a page that may no longer exist.
-    if (result.ok && result.pageChanged) {
+    if (result.ok && result.pageChanged && !run.planned) {
       for (const skipped of run.pendingCalls.splice(0)) {
         this.pushToolResult(
           run,
@@ -631,7 +1097,7 @@ export class AgentRunner {
     if (result.ok || !result.stopTask) return false;
     this.pushToolResult(run, call, result);
     run.pendingCalls.shift();
-    this.finish(run, 'failed', { error: result.message });
+    this.finish(run, 'failed', { error: result.message }, 'blocked');
     return true;
   }
 
@@ -652,6 +1118,7 @@ export class AgentRunner {
     run.approvalStartedAt = this.now();
     run.status = 'waiting_for_approval';
     run.notice = null;
+    run.metrics.firstStepMs ??= this.now() - run.startedAt;
     this.addEntry(run, 'approval', 'running', assessment.title, assessment.detail);
     this.deps.onApproval?.(approval, run);
   }
@@ -671,12 +1138,18 @@ export class AgentRunner {
     }
   }
 
-  private countFailure(run: AgentRun, message: string): void {
+  private countFailure(run: AgentRun, message: string, kind: AgentFailureKind = 'page'): void {
     run.consecutiveFailures += 1;
+    run.totalFailures += 1;
     if (run.consecutiveFailures >= this.limits.maxConsecutiveFailures) {
-      this.finish(run, 'failed', {
-        error: `Stopped after ${this.limits.maxConsecutiveFailures} failed attempts in a row. Last problem: ${message}`,
-      });
+      this.finish(
+        run,
+        'failed',
+        {
+          error: `Stopped after ${this.limits.maxConsecutiveFailures} failed attempts in a row. Last problem: ${message}`,
+        },
+        kind,
+      );
     }
   }
 
@@ -712,12 +1185,15 @@ export class AgentRunner {
     run: AgentRun,
     status: 'completed' | 'failed' | 'cancelled',
     outcome: { summary?: string; error?: string },
+    failureKind: AgentFailureKind | null = null,
   ): void {
     run.status = status;
     run.finishedAt = this.now();
     run.notice = null;
     run.summary = outcome.summary ?? null;
     run.error = outcome.error ?? null;
+    run.failureKind = failureKind;
+    run.metrics.totalMs = this.now() - run.startedAt - run.approvalWaitMs;
     run.pendingCalls = [];
     run.inflightCallId = null;
     if (run.approval) {
@@ -730,7 +1206,7 @@ export class AgentRunner {
     // The model conversation is only needed while running.
     run.messages = [];
     if (status !== 'completed') {
-      void this.remember(run, outcome.error ?? outcome.summary ?? status);
+      void this.remember(run, outcome.error ?? outcome.summary ?? status).catch(() => undefined);
     }
   }
 
@@ -741,13 +1217,9 @@ export class AgentRunner {
     );
   }
 
-  private abortSignal(): AbortSignal {
-    this.abort ??= new AbortController();
-    return this.abort.signal;
-  }
-
   private async persist(): Promise<void> {
     if (!this.current) return;
+    this.current.lastProgressAt = this.now();
     await this.deps.store.saveRun(this.current);
     this.deps.onChange?.(this.current);
   }

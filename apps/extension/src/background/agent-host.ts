@@ -1,14 +1,14 @@
 import { AgentRunner } from '@dopilot/agent-core';
 import type { AgentRun, RunStore } from '@dopilot/agent-core';
 import type { ConversationTurn } from '@dopilot/agent-core';
-import { isAgentActive, rankToolModels } from '@dopilot/shared';
+import { chooseToolModel, isAgentActive, MODEL_LIST_TTL_MS } from '@dopilot/shared';
 import type { AgentApproval, AgentSource } from '@dopilot/shared';
 import {
-  dropSelectedModel,
   loadApiKey,
   loadGroqStatus,
   markKeyRejected,
   recordConnectionTest,
+  recordModelIssue,
 } from '@/lib/api-key-store';
 import { chromeBrowserApi } from '@/lib/browser-commands';
 import { chromeContentPort } from '@/lib/content-client';
@@ -20,11 +20,14 @@ import { browserImagePort } from '@/lib/screenshot-image';
 import { hasAllSitesPermission, isSiteAuthorized } from '@/lib/site-access';
 import { createToolService } from '@/lib/tool-service';
 import { CaptureAccessError, createVisionService } from '@/lib/vision-service';
+import { ALLOWED_WEB_ORIGINS } from '@/messaging/external';
 import { hasTabDetails } from '@/permissions/tab-details';
 
 const RUN_KEY = 'agentRun';
 const CONVERSATION_KEY = 'agentConversation';
 const KEEP_ALIVE_MS = 20_000;
+const DOPILOT_TABS_KEY = 'dopilotTabs';
+const APPROVAL_WINDOW_KEY = 'approvalWindow';
 
 /** Session storage, so nothing about a task outlives the browser session. */
 const store: RunStore = {
@@ -74,7 +77,39 @@ export const vision = createVisionService({
   model: modelClient,
 });
 
+/**
+ * Tabs that have messaged us from Dopilot's website. Without the optional tabs permission
+ * their addresses are hidden, so this is how a task knows not to take one over.
+ */
+const dopilotTabs = new Set<number>();
+void chrome.storage.session.get(DOPILOT_TABS_KEY).then((stored) => {
+  const known: unknown = stored[DOPILOT_TABS_KEY];
+  if (Array.isArray(known)) for (const id of known) dopilotTabs.add(id as number);
+});
+
+export function noteDopilotTab(tabId: number | undefined): void {
+  if (tabId === undefined || dopilotTabs.has(tabId)) return;
+  dopilotTabs.add(tabId);
+  void chrome.storage.session.set({ [DOPILOT_TABS_KEY]: [...dopilotTabs] });
+}
+
+function isDopilotTab(tabId: number, url: string | undefined): boolean {
+  if (url) {
+    try {
+      return ALLOWED_WEB_ORIGINS.has(new URL(url).origin);
+    } catch {
+      return false;
+    }
+  }
+  return dopilotTabs.has(tabId);
+}
+
 const service = createToolService({
+  isDopilotTab,
+  isAgentBusy: async () => {
+    const run = await agentRunner.view();
+    return run !== null && isAgentActive(run.status);
+  },
   vision,
   api: chromeBrowserApi,
   content: chromeContentPort,
@@ -87,20 +122,22 @@ const service = createToolService({
 
 export const mcpBridge = createMcpBridge({ runCall: service.runExternalCall });
 
-/** Picks the user's model, or the best available. Lists models at most once, when needed. */
-async function chooseModel(tried: string[]): Promise<string | null> {
+/**
+ * Picks the model for a request. The list is fetched only when there is none or it is over
+ * a day old, and a task never depends on that succeeding: an old list still works.
+ */
+async function chooseModel(tried: string[]) {
   let status = await loadGroqStatus();
-  if (status.selectedModel) {
-    return tried.includes(status.selectedModel) ? null : status.selectedModel;
-  }
-  if (status.models.length === 0) {
+  const age = Date.now() - (status.connection.checkedAt ?? 0);
+  if (status.models.length === 0 || age > MODEL_LIST_TTL_MS) {
     const apiKey = await loadApiKey();
     if (!apiKey) return null;
     const outcome = await testGroqKey(apiKey);
     await recordConnectionTest(outcome.connection, outcome.models, outcome.other);
     status = await loadGroqStatus();
   }
-  return rankToolModels(status.models).find((model) => !tried.includes(model.id))?.id ?? null;
+  const { modelFallback } = await loadPreferences();
+  return chooseToolModel({ status, tried, allowFallback: modelFallback, now: Date.now() });
 }
 
 let keepAlive: ReturnType<typeof setInterval> | null = null;
@@ -116,7 +153,16 @@ function updateKeepAlive(run: AgentRun): void {
   }
 }
 
-let approvalWindow: { id: number; approvalId: string } | null = null;
+/** Kept in storage, because the worker may sleep for as long as the user takes to answer. */
+async function loadApprovalWindow(): Promise<{ id: number; approvalId: string } | null> {
+  const stored = await chrome.storage.session.get(APPROVAL_WINDOW_KEY);
+  return (stored[APPROVAL_WINDOW_KEY] as { id: number; approvalId: string } | undefined) ?? null;
+}
+
+async function saveApprovalWindow(value: { id: number; approvalId: string } | null): Promise<void> {
+  if (value) await chrome.storage.session.set({ [APPROVAL_WINDOW_KEY]: value });
+  else await chrome.storage.session.remove(APPROVAL_WINDOW_KEY);
+}
 
 async function isSidePanelOpen(): Promise<boolean> {
   const contexts = await chrome.runtime.getContexts({ contextTypes: ['SIDE_PANEL' as never] });
@@ -128,22 +174,30 @@ async function isSidePanelOpen(): Promise<boolean> {
  * side panel shows them inline. If it is closed, a small window asks instead.
  */
 async function presentApproval(approval: AgentApproval | null): Promise<void> {
+  const existing = await loadApprovalWindow();
   if (!approval) {
-    if (approvalWindow) {
-      const { id } = approvalWindow;
-      approvalWindow = null;
-      await chrome.windows.remove(id).catch(() => undefined);
+    if (existing) {
+      await saveApprovalWindow(null);
+      await chrome.windows.remove(existing.id).catch(() => undefined);
     }
     return;
   }
   if (await isSidePanelOpen()) return;
+  // Asked again after a restart or on the timer, and one question needs only one window.
+  if (existing?.approvalId === approval.id) {
+    if (await chrome.windows.get(existing.id).catch(() => null)) return;
+  } else if (existing) {
+    await chrome.windows.remove(existing.id).catch(() => undefined);
+  }
   const created = await chrome.windows.create({
     url: chrome.runtime.getURL(`confirm/index.html?approval=${encodeURIComponent(approval.id)}`),
     type: 'popup',
     width: 480,
     height: approval.screenshotId ? 520 : 300,
   });
-  if (created?.id !== undefined) approvalWindow = { id: created.id, approvalId: approval.id };
+  if (created?.id !== undefined) {
+    await saveApprovalWindow({ id: created.id, approvalId: approval.id });
+  }
 }
 
 export const agentRunner = new AgentRunner({
@@ -151,6 +205,7 @@ export const agentRunner = new AgentRunner({
   toolbox: service.toolbox,
   chooseModel,
   model: modelClient,
+  canUseModel: async () => (await loadApiKey()) !== undefined,
   onChange: (run) => {
     updateKeepAlive(run);
     // Screenshots last no longer than the task that needed them.
@@ -159,23 +214,22 @@ export const agentRunner = new AgentRunner({
   onApproval: (approval) => void presentApproval(approval).catch(() => undefined),
   onModelProblem: (kind, model) => {
     if (kind === 'invalid_key' || kind === 'forbidden') void markKeyRejected(kind);
-    if (kind === 'model_unavailable' && model) void dropSelectedModel(model);
+    if (kind === 'model_unavailable' && model) void recordModelIssue(model, 'unavailable');
   },
 });
 
-export async function startAgentTask(
+export function startAgentTask(
   instruction: string,
   source: AgentSource,
   protectedTabId: number | null = null,
 ): Promise<string | null> {
-  if (!(await loadApiKey())) return 'Add your Groq API key in Dopilot’s settings first.';
   return agentRunner.start(instruction, source, protectedTabId);
 }
 
 /** Closing the approval window counts as declining. */
-export function handleWindowClosed(windowId: number): void {
-  if (approvalWindow?.id !== windowId) return;
-  const { approvalId } = approvalWindow;
-  approvalWindow = null;
-  void agentRunner.resolveApproval(approvalId, false);
+export async function handleWindowClosed(windowId: number): Promise<void> {
+  const existing = await loadApprovalWindow();
+  if (existing?.id !== windowId) return;
+  await saveApprovalWindow(null);
+  await agentRunner.resolveApproval(existing.approvalId, false);
 }

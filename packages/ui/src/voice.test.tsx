@@ -339,3 +339,124 @@ describe('falling back to Groq', () => {
     expect(onListeningStart).toHaveBeenCalled();
   });
 });
+
+describe('fault injection: voice', () => {
+  const useGroq = { groqAllowed: true, choice: 'groq' as const };
+
+  it('comes back from a recognizer that refuses to start', async () => {
+    const onTranscript = vi.fn();
+    render(<Harness onTranscript={onTranscript} />);
+    class Broken extends FakeRecognition {
+      override start = vi.fn(() => {
+        throw new Error('InvalidStateError');
+      });
+    }
+    vi.stubGlobal('webkitSpeechRecognition', Broken);
+    await userEvent.click(mic());
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(mic().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('frees the microphone if recording cannot start', async () => {
+    class Broken extends FakeRecorder {
+      constructor(stream: unknown, options: unknown) {
+        super(stream, options);
+        throw new Error('NotSupportedError');
+      }
+    }
+    vi.stubGlobal('MediaRecorder', Broken);
+    render(<Harness {...useGroq} />);
+    await userEvent.click(mic());
+    await screen.findByRole('alert');
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('says so when a microphone is in use by another app', async () => {
+    getUserMedia.mockRejectedValue(new DOMException('busy', 'NotReadableError'));
+    render(<Harness {...useGroq} />);
+    await userEvent.click(mic());
+    expect((await screen.findByRole('alert')).textContent).toMatch(/another app/);
+  });
+
+  it('sends nothing for an empty recording', async () => {
+    class Silent extends FakeRecorder {
+      override stop = () => {
+        this.state = 'inactive';
+        this.onstop?.();
+      };
+    }
+    vi.stubGlobal('MediaRecorder', Silent);
+    const transcribe = vi.fn<TranscribeAudio>();
+    render(<Harness {...useGroq} transcribe={transcribe} />);
+    await userEvent.click(mic());
+    await waitFor(() => expect(mic().getAttribute('aria-pressed')).toBe('true'));
+    await act(async () => FakeRecorder.last.stop());
+    await screen.findByRole('alert');
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('does not submit a transcript of only punctuation', async () => {
+    const onTranscript = vi.fn();
+    render(<Harness onTranscript={onTranscript} />);
+    await userEvent.click(mic());
+    act(() => FakeRecognition.last.hear(' . ', true));
+    await act(async () => FakeRecognition.last.stop());
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect((await screen.findByRole('alert')).textContent).toMatch(/catch that/);
+  });
+
+  it('submits one command per recording', async () => {
+    const onTranscript = vi.fn();
+    const transcribe = vi.fn<TranscribeAudio>(async () => ({ text: 'open youtube', error: null }));
+    render(<Harness {...useGroq} transcribe={transcribe} onTranscript={onTranscript} />);
+    await userEvent.click(mic());
+    await waitFor(() => expect(mic().getAttribute('aria-pressed')).toBe('true'));
+    await userEvent.click(mic());
+    await waitFor(() => expect(onTranscript).toHaveBeenCalled());
+    expect(onTranscript).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the result if cancelled while transcribing', async () => {
+    let finish: (value: { text: string; error: null }) => void = () => undefined;
+    const onTranscript = vi.fn();
+    const transcribe = vi.fn<TranscribeAudio>(() => new Promise((resolve) => (finish = resolve)));
+    render(<Harness {...useGroq} transcribe={transcribe} onTranscript={onTranscript} />);
+    await userEvent.click(mic());
+    await waitFor(() => expect(mic().getAttribute('aria-pressed')).toBe('true'));
+    await userEvent.click(mic());
+    await waitFor(() => expect(transcribe).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel voice input' }));
+    await act(async () => finish({ text: 'delete everything', error: null }));
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  it('stops waiting for a transcription that never returns, and for a stuck recognizer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const transcribe = vi.fn<TranscribeAudio>(() => new Promise(() => undefined));
+      const { unmount } = render(<Harness {...useGroq} transcribe={transcribe} />);
+      await act(async () => mic().click());
+      await waitFor(() => expect(mic().getAttribute('aria-pressed')).toBe('true'));
+      await act(async () => mic().click());
+      await waitFor(() => expect(transcribe).toHaveBeenCalled());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(46_000);
+      });
+      expect((await screen.findByRole('alert')).textContent).toMatch(/could not be transcribed/);
+      unmount();
+
+      render(<Harness />);
+      await act(async () => mic().click());
+      FakeRecognition.last.onend = null;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(26_000);
+      });
+      expect((await screen.findByRole('alert')).textContent).toMatch(/stopped responding/);
+      expect(FakeRecognition.last.abort).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

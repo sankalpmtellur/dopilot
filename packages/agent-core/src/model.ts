@@ -28,6 +28,8 @@ export interface ModelRequest {
 export interface ModelResponse {
   text: string | null;
   toolCalls: ToolCall[];
+  /** Tokens used, when the provider reports them. */
+  usage?: { promptTokens: number; completionTokens: number };
 }
 
 export type ModelErrorKind =

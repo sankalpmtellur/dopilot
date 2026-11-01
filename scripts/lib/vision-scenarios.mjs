@@ -96,7 +96,9 @@ function lastData(body, key) {
     const match = text.match(new RegExp(`"${key}":"([^"]+)"`));
     if (match) return match[1];
   }
-  throw new Error(`The scenario expected ${key} in a tool result`);
+  throw new Error(
+    `The scenario expected ${key} in a tool result. Last: ${String(toolResults(body).at(-1)).slice(0, 300)}`,
+  );
 }
 
 const isVisionRequest = (body) =>
@@ -442,6 +444,9 @@ export async function verifyVoiceAndVision(name, executable, extensionPath) {
     check(
       'Saying “stop” stops the task, without using the AI',
       stopped?.status === 'cancelled' && stub.mainRequests.length === agentRequests,
+      stopped?.status === 'cancelled'
+        ? ''
+        : `${stopped?.status}, voice said: ${await evaluate(panel, `document.querySelector('[role=alert]')?.textContent ?? 'nothing'`)}`,
     );
 
     // --- Spoken replies, with the real speech API ---

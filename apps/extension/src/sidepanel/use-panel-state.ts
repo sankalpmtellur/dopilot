@@ -1,5 +1,5 @@
 import type { ExtensionState } from '@dopilot/shared';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getState } from '@/lib/panel-client';
 
 export const CONVERSATION_STORAGE_KEY = 'panelConversation';
@@ -8,14 +8,34 @@ export const CONVERSATION_STORAGE_KEY = 'panelConversation';
 export function usePanelState() {
   const [state, setState] = useState<ExtensionState | null>(null);
   const [failed, setFailed] = useState(false);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const again = useRef(false);
 
-  const refresh = useCallback(async () => {
-    try {
-      setState(await getState());
-      setFailed(false);
-    } catch {
-      setFailed(true);
+  // Page loads fire many events at once. One request runs at a time, with one more after it
+  // to catch what changed meanwhile, so an older reply can never overwrite a newer one.
+  const refresh = useCallback((): Promise<void> => {
+    if (inFlight.current) {
+      again.current = true;
+      return inFlight.current;
     }
+    const work = (async () => {
+      do {
+        again.current = false;
+        try {
+          const next = await getState();
+          setState((previous) =>
+            JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
+          );
+          setFailed(false);
+        } catch {
+          setFailed(true);
+        }
+      } while (again.current);
+    })().finally(() => {
+      inFlight.current = null;
+    });
+    inFlight.current = work;
+    return work;
   }, []);
 
   useEffect(() => {

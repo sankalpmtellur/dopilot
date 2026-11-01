@@ -64,19 +64,26 @@ export function createBridge({
     if (!tokensMatch(given, token)) return reply.code(401).send();
   });
 
-  app.get('/bridge/next', async (_request, reply) => {
+  app.get('/bridge/next', async (request, reply) => {
     lastPollAt = Date.now();
     if (queue.length === 0) {
+      // A restarted worker polls again while its old request still looks open. Only the
+      // newest may wait, or a call could be handed to a connection nobody is reading.
+      wakePoller?.();
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, longPollMs);
-        wakePoller = () => {
+        const finish = () => {
           clearTimeout(timer);
+          if (wakePoller === finish) wakePoller = null;
+          request.raw.off('close', finish);
           resolve();
         };
+        const timer = setTimeout(finish, longPollMs);
+        wakePoller = finish;
+        request.raw.once('close', finish);
       });
-      wakePoller = null;
       lastPollAt = Date.now();
     }
+    if (request.raw.destroyed || reply.raw.destroyed) return reply.code(204).send();
     const next = queue.shift();
     return next ? next : reply.code(204).send();
   });
@@ -107,6 +114,9 @@ export function createBridge({
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           waiting.delete(id);
+          // Otherwise the extension could still act on it later, long after the caller gave up.
+          const index = queue.findIndex((call) => call.id === id);
+          if (index !== -1) queue.splice(index, 1);
           resolve(toolFailure('timeout', 'The extension did not respond in time.'));
         }, callTimeoutMs);
         waiting.set(id, (result) => {

@@ -7,12 +7,17 @@ import type {
 } from '@dopilot/shared';
 import { RateLimiter } from './rate-limit';
 
+declare const __DOPILOT_WEB_ORIGINS__: string[] | undefined;
+
 /**
- * Must match externally_connectable in the manifest. The browser enforces the
- * manifest and this check is a second, testable layer. Add the production origin
- * to both when one exists.
+ * Must match externally_connectable in the manifest, and both come from the same build
+ * setting. The browser enforces the manifest and this check is a second, testable layer.
  */
-export const ALLOWED_WEB_ORIGINS: ReadonlySet<string> = new Set(['http://localhost:3000']);
+export const ALLOWED_WEB_ORIGINS: ReadonlySet<string> = new Set(
+  typeof __DOPILOT_WEB_ORIGINS__ === 'undefined'
+    ? ['http://localhost:3000']
+    : __DOPILOT_WEB_ORIGINS__,
+);
 
 export interface ExternalSender {
   origin?: string | undefined;

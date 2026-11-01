@@ -82,8 +82,16 @@ export async function findCurrentTabId(
   senderTabId?: number,
 ): Promise<number | null> {
   if (source === 'panel') {
-    const [tab] = await api.queryTabs({ active: true, lastFocusedWindow: true });
-    return tab?.id ?? null;
+    // Normal windows only: the last focused window may be Dopilot's own approval popup.
+    const [focused] = await api.queryTabs({
+      active: true,
+      lastFocusedWindow: true,
+      windowType: 'normal',
+    });
+    if (focused?.id !== undefined) return focused.id;
+    const active = await api.queryTabs({ active: true, windowType: 'normal' });
+    active.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+    return active[0]?.id ?? null;
   }
   const tabs = await api.queryTabs({ windowType: 'normal' });
   const others = tabs

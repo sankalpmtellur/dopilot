@@ -20,6 +20,20 @@ export interface ExecutionLimits {
   maxRateLimitWaitMs: number;
   /** How many times one run may continue after its service worker was stopped. */
   maxResumes: number;
+  /** Failed steps across a whole task, which catches failing in a different way each time. */
+  maxTotalFailures: number;
+  /** Nobody answering an approval must not hold a task open forever. */
+  maxApprovalWaitMs: number;
+  /** One Groq request. Longer than this and something is wrong. */
+  modelCallTimeoutMs: number;
+  /** Choosing a model, which can involve fetching the list. */
+  modelChoiceTimeoutMs: number;
+  /** Checking one action against the live page. */
+  assessTimeoutMs: number;
+  /** Running one browser tool. Tools that wait for longer ask for more with `toolTimeoutMs`. */
+  toolTimeoutMs: number;
+  /** A last resort: no progress at all for this long means the loop itself is stuck. */
+  maxStallMs: number;
 }
 
 export const DEFAULT_EXECUTION_LIMITS: ExecutionLimits = {
@@ -33,6 +47,13 @@ export const DEFAULT_EXECUTION_LIMITS: ExecutionLimits = {
   maxRateLimitWaits: 3,
   maxRateLimitWaitMs: 60_000,
   maxResumes: 5,
+  maxTotalFailures: 8,
+  maxApprovalWaitMs: 5 * 60 * 1000,
+  modelCallTimeoutMs: 45_000,
+  modelChoiceTimeoutMs: 15_000,
+  assessTimeoutMs: 20_000,
+  toolTimeoutMs: 25_000,
+  maxStallMs: 2 * 60 * 1000,
 };
 
 const RECENT_CALL_WINDOW = 10;
@@ -54,4 +75,12 @@ export function isRepetitive(
   }
   if (identical >= limits.maxIdenticalCalls) return true;
   return running.filter((call) => call === signature).length >= limits.maxRepeatsInWindow;
+}
+
+const BACKOFF_CAP_MS = 8000;
+
+/** Exponential, with jitter so a shared outage does not bring every retry back at once. */
+export function backoffMs(attempt: number, baseMs: number, random = Math.random): number {
+  const delay = Math.min(baseMs * 2 ** Math.max(0, attempt - 1), BACKOFF_CAP_MS);
+  return Math.round(delay + delay * 0.2 * random());
 }

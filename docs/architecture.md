@@ -45,12 +45,16 @@ Ordinary pages cannot call extension APIs. The only path is
 4. The worker validates again before acting, for example revalidating URLs.
 5. Each command needs a new request ID, and commands are rate limited.
 
-Requests carry unique IDs, and the website applies timeouts and can cancel. To go live,
-add the production origin in both the manifest and `ALLOWED_WEB_ORIGINS`.
+Requests carry unique IDs, and the website applies timeouts and can cancel.
 
 The manifest's `key` is a public key that pins the extension ID, so the website can find
-unpacked installs. Its private key was discarded. Remove `key` when publishing to a store,
-which assigns its own ID, and update `NEXT_PUBLIC_DOPILOT_EXTENSION_ID`.
+unpacked installs. Its private key was discarded. A release build (`pnpm release:extension`)
+takes the website's origin as a setting, writes it to both the manifest and
+`ALLOWED_WEB_ORIGINS`, and removes `key` and every development origin. The store assigns its
+own ID, which goes in the website's `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`. See the README.
+
+A task may not use a tab showing Dopilot's website. Those tabs are recognized by address, or
+by having messaged the extension, since addresses stay hidden without the tabs permission.
 
 "Current tab" means the active tab in the side panel. The website is always the active
 tab while in use, so there it means the most recently used other tab.
@@ -129,8 +133,37 @@ Exact commands such as `new tab` run directly without AI, to save quota. Anythin
 agent. Requests stay small: older page observations shrink to stubs, conversation history is bounded,
 and tool definitions leave out limits that are enforced anyway.
 
-Groq's model list does not say which models support tools, so `rankToolModels` goes by name, and a
-model that turns out to be unavailable or unable to use tools is skipped at run time.
+### Staying responsive
+
+No step of the loop can hold it open. Each Groq request, safety check and tool call runs under its own
+time limit and its own abort signal, and Stop cancels whichever one is running. An abandoned step's result
+is ignored. Messages to pages have time limits too, so a frozen page costs seconds, not a stuck task.
+
+- **An action is never retried automatically.** If its outcome is unknown, for example because the page
+  stopped answering, the model is told so and must look before acting again. Only reads are retried.
+- **Nothing acts after Stop.** The run is checked again immediately before every action, and tool code
+  checks its signal before each side effect. Each run has its own loop, so one stuck after Stop cannot
+  block the next task.
+- **One copy of a run.** All entry points share a single loaded run, because a worker woken by Stop also
+  resumes, and separate copies would let Stop end one while the other kept acting.
+- **A watchdog alarm** wakes the worker every 30 seconds to end unanswered approvals after 5 minutes,
+  pick up a run whose worker died, and end a loop with no progress for 2 minutes.
+- **Progress, not call counts.** Looking at a page again after an action worked is progress. Repeating the
+  same look, actions that change nothing, and a task that keeps failing in different ways all end it.
+
+### Instructions that need no AI
+
+`parseSimpleInstruction` recognizes clauses like opening a known site, switching tabs or scrolling. If any
+clause is not understood exactly, the whole instruction goes to the AI, so it never guesses. Recognized
+instructions become ordinary tool calls that take the same route through validation, policy and approval.
+If a step fails, the AI takes over if there is a key, with the steps so far as its context.
+
+### Choosing a model
+
+Groq's model list has no capability field, so capability comes from the model's name and from what Groq
+has actually refused. The list is cached for a day. The user's selected model is used while it works, and
+is kept when Groq refuses it, since that may be an outage. Whether another model may stand in is the user's
+setting, and they are told when one does. A model that cannot call tools is never used for the agent.
 
 ## MCP
 

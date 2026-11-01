@@ -26,6 +26,8 @@ export const ToolResultSchema = z.discriminatedUnion('ok', [
     untrusted: z.boolean().optional(),
     /** Later tools without an explicit tab should act on this tab. */
     currentTabId: z.number().int().nonnegative().optional(),
+    /** The action ran but nothing visibly happened, which is not yet progress. */
+    noEffect: z.boolean().optional(),
   }),
   z.strictObject({
     ok: z.literal(false),
@@ -35,6 +37,8 @@ export const ToolResultSchema = z.discriminatedUnion('ok', [
     recoverable: z.boolean(),
     /** Only the user can get past this, for example a CAPTCHA, so the task must end. */
     stopTask: z.boolean().optional(),
+    /** The message quotes the webpage, so it must be treated as data too. */
+    untrusted: z.boolean().optional(),
   }),
 ]);
 export type ToolResult = z.infer<typeof ToolResultSchema>;
@@ -103,8 +107,44 @@ export type AgentTimelineEntry = z.infer<typeof AgentTimelineEntrySchema>;
 export const AgentSourceSchema = z.enum(['panel', 'website']);
 export type AgentSource = z.infer<typeof AgentSourceSchema>;
 
-/** What UIs may see of a run. It never includes the model conversation. */
-export const AgentRunViewSchema = z.strictObject({
+/** Why a task failed, so the interface can say whose problem it is and offer the right fix. */
+export const AgentFailureKindSchema = z.enum([
+  'key',
+  'model',
+  'rate_limit',
+  'network',
+  'page',
+  'limit',
+  'declined',
+  'blocked',
+  'internal',
+]);
+export type AgentFailureKind = z.infer<typeof AgentFailureKindSchema>;
+
+/** Timings and counts only. Never page content, addresses or anything else private. */
+export const AgentMetricsSchema = z.object({
+  /** Until the first visible step, which is what the wait feels like. */
+  firstStepMs: z.number().nullable(),
+  totalMs: z.number().nullable(),
+  modelRequests: z.number(),
+  modelMs: z.number(),
+  toolCalls: z.number(),
+  observeMs: z.number(),
+  actMs: z.number(),
+  visionMs: z.number(),
+  promptTokens: z.number(),
+  completionTokens: z.number(),
+  /** Carried out without any AI request. */
+  deterministic: z.boolean(),
+});
+export type AgentMetrics = z.infer<typeof AgentMetricsSchema>;
+
+/**
+ * What UIs may see of a run. It never includes the model conversation. New fields stay
+ * optional and unknown ones are dropped, because the website updates on its own schedule
+ * and a store extension can lag behind it for days.
+ */
+export const AgentRunViewSchema = z.object({
   id: z.string().min(1),
   instruction: z.string(),
   source: AgentSourceSchema,
@@ -122,6 +162,8 @@ export const AgentRunViewSchema = z.strictObject({
   approval: AgentApprovalSchema.nullable(),
   summary: z.string().nullable(),
   error: z.string().nullable(),
+  failureKind: AgentFailureKindSchema.nullable().optional(),
+  metrics: AgentMetricsSchema.optional(),
 });
 export type AgentRunView = z.infer<typeof AgentRunViewSchema>;
 

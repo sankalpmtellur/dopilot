@@ -22,8 +22,10 @@ import type {
   ScreenshotRecord,
   ToolResult,
   VisualElement,
+  VisualSnapshot,
 } from '@dopilot/shared';
 import type { BrowserApi } from './browser-commands';
+import { PageBusyError } from './content-client';
 import type { ContentPort } from './content-client';
 import type { ImagePort } from './screenshot-image';
 
@@ -65,6 +67,18 @@ function block(code: string, message: string, recoverable = true, stopTask?: boo
   return { decision: 'block', result: toolFailure(code, message, recoverable, stopTask) } as const;
 }
 
+/** Whether two looks at a page line up, so masks and coordinates still mean the same place. */
+function sameLayout(a: VisualSnapshot, b: VisualSnapshot): boolean {
+  return (
+    a.viewport.url === b.viewport.url &&
+    a.viewport.width === b.viewport.width &&
+    a.viewport.height === b.viewport.height &&
+    a.viewport.scrollX === b.viewport.scrollX &&
+    a.viewport.scrollY === b.viewport.scrollY &&
+    JSON.stringify(a.secretBoxes) === JSON.stringify(b.secretBoxes)
+  );
+}
+
 function parseJsonReply(text: string): Record<string, unknown> | null {
   const match = /\{[\s\S]*\}/.exec(text);
   if (!match) return null;
@@ -93,6 +107,8 @@ export function createVisionService({
 }: VisionServiceDeps) {
   const shots = new Map<string, Shot>();
   const consent = new Set<string>();
+  /** The image shown to the user for approval, which is the one that must then be sent. */
+  let awaitingApproval: string | null = null;
 
   function latestFor(tabId: number): Shot | undefined {
     return [...shots.values()].reverse().find((shot) => shot.tabId === tabId);
@@ -167,17 +183,40 @@ export function createVisionService({
     }
 
     const previous = latestFor(tabId);
-    if (
+    const reusable =
       previous &&
-      now() - previous.capturedAt <= SCREENSHOT_REUSE_MS &&
-      checkScreenshotFresh(previous, tabId, snapshot.viewport, now()) === null
-    ) {
+      (previous.id === awaitingApproval || now() - previous.capturedAt <= SCREENSHOT_REUSE_MS);
+    if (reusable && checkScreenshotFresh(previous, tabId, snapshot.viewport, now()) === null) {
       return { shot: previous };
     }
 
     let raw: string;
     try {
       raw = await takeScreenshot(tab.windowId);
+      // The browser photographs whatever is showing now. If the user moved to another tab or
+      // the page moved, this image may show the wrong site or have its masks in the wrong place.
+      const stillShowing = (await api.getTab(tabId).catch(() => null))?.active === true;
+      if (!stillShowing) {
+        return {
+          assessment: block(
+            'tab_not_visible',
+            'That tab stopped being the visible one, so the screenshot was discarded. Use switch_tab first.',
+          ),
+        };
+      }
+      const after = await content.send(tabId, {
+        type: 'content.visual_snapshot',
+        limit: MAX_ELEMENTS_FOR_VISION,
+      });
+      const settled = after.ok ? VisualSnapshotSchema.safeParse(after.data).data : undefined;
+      if (!settled || !sameLayout(snapshot, settled)) {
+        return {
+          assessment: block(
+            'page_moving',
+            'The page changed while the screenshot was taken, so it was discarded. Wait for it to settle and try once more.',
+          ),
+        };
+      }
     } catch (error) {
       if (error instanceof CaptureAccessError) {
         return {
@@ -191,7 +230,12 @@ export function createVisionService({
           },
         };
       }
-      return { assessment: block('capture_failed', 'The screenshot could not be taken.') };
+      return {
+        assessment: block(
+          error instanceof PageBusyError ? 'page_busy' : 'capture_failed',
+          'The screenshot could not be taken.',
+        ),
+      };
     }
 
     const rawProblem = validateImageDataUrl(raw);
@@ -251,6 +295,7 @@ export function createVisionService({
     if (!sensitive && key && consent.has(key)) return { decision: 'allow' };
 
     const host = new URL(shot.origin).host;
+    awaitingApproval = shot.id;
     return {
       decision: 'approve',
       kind: 'screenshot',
@@ -268,8 +313,12 @@ export function createVisionService({
     messages: ModelMessage[],
     shot: Shot,
     signal: AbortSignal,
-    withImage: (dataUrl: string) => ModelMessage[] = () => messages,
-  ): Promise<{ text: string } | { failure: ToolResult }> {
+    /** Called with a smaller copy of `source` when the image is refused as too large. */
+    retry?: {
+      source: string;
+      messagesFor: (dataUrl: string, width: number, height: number) => ModelMessage[];
+    },
+  ): Promise<{ text: string; scale: number; notice?: string } | { failure: ToolResult }> {
     const status = await loadGroqStatus();
     const candidates = [
       ...new Set(
@@ -283,6 +332,7 @@ export function createVisionService({
 
     let current = messages;
     let shrunk = false;
+    let scale = 1;
     const client = await model();
 
     for (let index = 0; index < candidates.length;) {
@@ -304,7 +354,12 @@ export function createVisionService({
             ),
           };
         }
-        return { text: answer };
+        // Never a silent swap: the user chose that model, so they hear when it was not used.
+        const swapped =
+          status.selectedVisionModel && candidate !== status.selectedVisionModel
+            ? `${status.selectedVisionModel} was not available, so ${candidate} was used.`
+            : undefined;
+        return { text: answer, scale, ...(swapped && { notice: swapped }) };
       } catch (error) {
         const failure = error instanceof ModelError ? error : new ModelError('server', 'Failed.');
         switch (failure.kind) {
@@ -317,13 +372,17 @@ export function createVisionService({
               return { failure: toolFailure('image_rejected', failure.message, false) };
             }
             shrunk = true;
-            const smaller = await image.process(shot.dataUrl, {
+            const smaller = await image.process(retry?.source ?? shot.dataUrl, {
               viewportWidth: shot.imageWidth,
               viewportHeight: shot.imageHeight,
               masks: [],
               maxEdge: SMALLER_RETRY_EDGE,
             });
-            current = withImage(smaller.dataUrl);
+            // Answers in pixels now refer to this smaller image, and are scaled back up later.
+            scale = shot.imageWidth / smaller.width;
+            current = retry
+              ? retry.messagesFor(smaller.dataUrl, smaller.width, smaller.height)
+              : messages;
             continue;
           }
           case 'cancelled':
@@ -371,14 +430,15 @@ export function createVisionService({
     if (cached) return cached;
 
     const text = `Page: ${shot.viewport.title}\nQuestion: ${question}`;
-    const reply = await ask(userMessage(text, shot.dataUrl), shot, signal, (dataUrl) =>
-      userMessage(text, dataUrl),
-    );
+    const reply = await ask(userMessage(text, shot.dataUrl), shot, signal, {
+      source: shot.dataUrl,
+      messagesFor: (dataUrl) => userMessage(text, dataUrl),
+    });
     if ('failure' in reply) return reply.failure;
 
     const result: ToolResult = {
       ok: true,
-      summary: 'The vision model looked at the screenshot.',
+      summary: `The vision model looked at the screenshot.${reply.notice ? ` ${reply.notice}` : ''}`,
       untrusted: true,
       data: { screenshotId: shot.id, answer: reply.text },
     };
@@ -413,17 +473,26 @@ export function createVisionService({
           }`,
       )
       .join('\n');
-    const text = `Numbered pink boxes mark the page's real controls:
+    const promptFor = (
+      width: number,
+      height: number,
+    ) => `Numbered pink boxes mark the page's real controls:
 ${list || '(none)'}
 
-The image is ${shot.imageWidth}x${shot.imageHeight} pixels.
+The image is ${width}x${height} pixels.
 Request: ${question}
 
 Reply with only JSON: {"description":"one or two sentences","targets":[{"n":<box number>,"why":"short"}],"points":[{"x":<image pixel>,"y":<image pixel>,"why":"short"}]}
 Use "targets" whenever a numbered box matches. Use "points" only for something visible with no box, such as part of a canvas. Leave both empty if you are not sure. Do not guess.`;
 
-    const reply = await ask(userMessage(text, marked), shot, signal, (dataUrl) =>
-      userMessage(text, dataUrl),
+    const reply = await ask(
+      userMessage(promptFor(shot.imageWidth, shot.imageHeight), marked),
+      shot,
+      signal,
+      {
+        source: marked,
+        messagesFor: (dataUrl, width, height) => userMessage(promptFor(width, height), dataUrl),
+      },
     );
     if ('failure' in reply) return reply.failure;
 
@@ -451,7 +520,7 @@ Use "targets" whenever a numbered box matches. Use "points" only for something v
 
     const points = (Array.isArray(parsed?.points) ? parsed.points : []).flatMap(
       (item: { x?: unknown; y?: unknown; why?: unknown }, index: number) => {
-        const point = { x: Number(item?.x), y: Number(item?.y) };
+        const point = { x: Number(item?.x) * reply.scale, y: Number(item?.y) * reply.scale };
         if (!imagePointToViewport(point, shot)) return [];
         const pointId = `p${index + 1}`;
         shot.points.set(pointId, point);
@@ -466,7 +535,7 @@ Use "targets" whenever a numbered box matches. Use "points" only for something v
           ? `Matched ${targets.length} element on the page.`
           : points.length > 0
             ? 'Found a visual target with no matching element.'
-            : 'The vision model looked, but found no matching target.',
+            : 'The vision model looked, but could not identify that with confidence. Nothing was guessed.',
       untrusted: true,
       data: {
         screenshotId: shot.id,
@@ -500,6 +569,7 @@ Use "targets" whenever a numbered box matches. Use "points" only for something v
           );
     }
     const { shot } = prepared;
+    if (shot.id === awaitingApproval) awaitingApproval = null;
 
     if (name === 'capture_visible_tab') {
       return {
@@ -626,6 +696,7 @@ Use "targets" whenever a numbered box matches. Use "points" only for something v
     clear: () => {
       shots.clear();
       consent.clear();
+      awaitingApproval = null;
     },
   };
 }

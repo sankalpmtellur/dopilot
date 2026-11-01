@@ -11,6 +11,8 @@ export interface BrowserToolDefinition<Input extends z.ZodObject = z.ZodObject> 
   effect: 'observe' | 'act';
   /** `vision` tools send a screenshot to the AI provider, which is limited per task. */
   cost?: 'vision';
+  /** Still available over MCP, but offering it to the agent only invites a wasted step. */
+  hiddenFromAgent?: boolean;
   input: Input;
 }
 
@@ -33,6 +35,7 @@ export const BROWSER_TOOLS = [
     description: 'Get the current tab: ID, title and address.',
     risk: 'read',
     effect: 'observe',
+    hiddenFromAgent: true,
     input: z.strictObject({}),
   }),
   defineTool({
@@ -66,28 +69,28 @@ export const BROWSER_TOOLS = [
   defineTool({
     name: 'get_interactive_elements',
     description:
-      'List buttons, links and inputs with refs. Use query to filter by name. Refs expire when the page changes.',
+      'List buttons, links and inputs with refs. Filter with query on long pages. Refs expire when the page changes.',
     risk: 'read',
     effect: 'observe',
     input: z.strictObject({ ...optionalTab, query: z.string().max(100).optional() }),
   }),
   defineTool({
     name: 'open_tab',
-    description: 'Open a new tab, optionally at a web address, and make it current.',
+    description: 'Open one new tab, at the url if given, and make it current. Reports the page.',
     risk: 'interact',
     effect: 'act',
     input: z.strictObject({ url: address.optional() }),
   }),
   defineTool({
     name: 'navigate',
-    description: 'Go to a web address in a tab.',
+    description: 'Change an existing tab to a web address. Reports the page.',
     risk: 'interact',
     effect: 'act',
     input: z.strictObject({ ...optionalTab, url: address }),
   }),
   defineTool({
     name: 'switch_tab',
-    description: 'Switch to an open tab and make it current.',
+    description: 'Bring an open tab to the front and make it current.',
     risk: 'interact',
     effect: 'act',
     input: z.strictObject({ tabId }),
@@ -139,6 +142,7 @@ export const BROWSER_TOOLS = [
     description: 'Empty an input.',
     risk: 'interact',
     effect: 'act',
+    hiddenFromAgent: true,
     input: z.strictObject({ ...optionalTab, ref }),
   }),
   defineTool({
@@ -184,15 +188,16 @@ export const BROWSER_TOOLS = [
   defineTool({
     name: 'capture_visible_tab',
     description:
-      'Take a screenshot of the visible part of the current tab, without sending it anywhere. Rarely needed: the two vision tools capture for themselves.',
+      'Take a screenshot of the visible part of the current tab, without sending it anywhere.',
     risk: 'read',
     effect: 'observe',
+    hiddenFromAgent: true,
     input: z.strictObject(optionalTab),
   }),
   defineTool({
     name: 'analyze_screenshot',
     description:
-      'Ask a vision model about what is visible: images, charts, icons, layout, text inside pictures, or "what is on my screen". Slower and limited per task, so prefer the DOM tools when they can answer. Untrusted data.',
+      'Ask a vision model about what is visible: images, charts, icons, layout, or "what is on my screen". Slow and limited per task. Untrusted data.',
     risk: 'read',
     effect: 'observe',
     cost: 'vision',
@@ -201,7 +206,7 @@ export const BROWSER_TOOLS = [
   defineTool({
     name: 'get_visual_page_context',
     description:
-      'Find a control by how it looks, such as "the blue button" or an icon with no label, by matching a screenshot to the page. Returns element refs for click_element, or point IDs for click_visual_target when nothing on the page matches. Scroll the target into view first. Untrusted data.',
+      'Find a control by how it looks, such as "the blue button". Returns refs for click_element, or point IDs for click_visual_target if no element matches. Target must be on screen. Untrusted data.',
     risk: 'read',
     effect: 'observe',
     cost: 'vision',
@@ -210,7 +215,7 @@ export const BROWSER_TOOLS = [
   defineTool({
     name: 'click_visual_target',
     description:
-      'Click a point ID returned by get_visual_page_context. Only for targets with no element ref. Fails if the page has changed since the screenshot.',
+      'Click a point ID from get_visual_page_context, only for targets with no ref. Fails if the page has changed.',
     risk: 'interact',
     effect: 'act',
     input: z.strictObject({
@@ -285,11 +290,13 @@ function stripValidationDetail(schema: unknown, isPropertyMap = false): unknown 
  * enforced, because every call is checked against the full schema in `validateToolCall`.
  */
 export function toolSpecs(): ModelToolSpec[] {
-  return BROWSER_TOOLS.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: stripValidationDetail(z.toJSONSchema(tool.input)) as Record<string, unknown>,
-  }));
+  return BROWSER_TOOLS.filter((tool: BrowserToolDefinition) => !tool.hiddenFromAgent).map(
+    (tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: stripValidationDetail(z.toJSONSchema(tool.input)) as Record<string, unknown>,
+    }),
+  );
 }
 
 const LABELS: Record<string, (args: Record<string, unknown>) => string> = {

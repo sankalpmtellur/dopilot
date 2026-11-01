@@ -14,7 +14,7 @@ export const PROTOCOL_VERSION = 2;
 const envelope = { protocolVersion: z.literal(PROTOCOL_VERSION) };
 const request = { ...envelope, requestId: z.uuid() };
 
-export const ExtensionStateSchema = z.strictObject({
+export const ExtensionStateSchema = z.object({
   extensionVersion: z.string().min(1),
   tabDetailsAvailable: z.boolean(),
   tabs: z.array(TabInfoSchema),

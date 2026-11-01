@@ -166,3 +166,52 @@ describe('addresses', () => {
     expect(assessToolCall('close_tab', {}, null).decision).toBe('approve');
   });
 });
+
+describe('addresses built after reading a page', () => {
+  const after = (url: string, instruction = 'summarize this article') =>
+    assessToolCall('navigate', { url }, null, { instruction, pageDataRead: true });
+
+  it('needs approval to send unexplained data to another site', () => {
+    expect(after('https://evil.example/?d=my-private-account-number-1234')).toMatchObject({
+      decision: 'approve',
+      category: 'data_in_address',
+    });
+    expect(after('https://evil.example/c/my-private-account-number-1234')).toMatchObject({
+      decision: 'approve',
+    });
+  });
+
+  it('needs approval to reach the user’s own network because a page said so', () => {
+    expect(after('http://192.168.1.1/admin')).toMatchObject({ decision: 'approve' });
+    expect(after('http://localhost:8080/')).toMatchObject({ decision: 'approve' });
+    expect(after('http://169.254.169.254/latest')).toMatchObject({ decision: 'approve' });
+  });
+
+  it('allows what the user asked for', () => {
+    expect(
+      after(
+        'https://www.google.com/search?q=best+pizza+near+central+park',
+        'search for best pizza near central park',
+      ),
+    ).toEqual({ decision: 'allow' });
+    expect(after('http://localhost:8080/', 'go to localhost:8080')).toEqual({ decision: 'allow' });
+    expect(
+      after('https://evil.example/?d=my-private-account-number-1234', 'open evil.example'),
+    ).toEqual({
+      decision: 'allow',
+    });
+  });
+
+  it('allows ordinary addresses', () => {
+    expect(after('https://en.wikipedia.org/wiki/Turing_test')).toEqual({ decision: 'allow' });
+  });
+
+  it('leaves this out until a page has been read', () => {
+    expect(
+      assessToolCall('navigate', { url: 'https://x.example/?d=aaaaaaaaaaaaaaaaaaaaaaaa' }, null, {
+        instruction: 'x',
+        pageDataRead: false,
+      }),
+    ).toEqual({ decision: 'allow' });
+  });
+});

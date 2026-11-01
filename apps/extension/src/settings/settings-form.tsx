@@ -27,7 +27,7 @@ import {
   removeAuthorizedSite,
 } from '@/lib/site-access';
 import { testGroqConnection } from '@/lib/panel-client';
-import { MCP_BRIDGE_ORIGIN } from '@/lib/mcp-bridge';
+import { MCP_AVAILABLE, MCP_BRIDGE_ORIGIN } from '@/lib/mcp-bridge';
 import { configureMcp, getMcpStatus } from '@/lib/panel-client';
 import { hasTabDetails, removeTabDetails, requestTabDetails } from '@/permissions/tab-details';
 
@@ -223,6 +223,27 @@ function usePreferences() {
 }
 
 type MicState = 'granted' | 'denied' | 'prompt' | 'unknown';
+
+/** What happens when the model chosen above stops working. */
+function ModelFallbackSection() {
+  const [preferences, update] = usePreferences();
+  return (
+    <Section title="If your model is unavailable">
+      <label className="flex items-start gap-2 text-[13px]">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={preferences.modelFallback}
+          onChange={(event) => update({ modelFallback: event.target.checked })}
+        />
+        <span>
+          Use another suitable model, and tell me when that happens. Otherwise the task stops and
+          asks you to choose.
+        </span>
+      </label>
+    </Section>
+  );
+}
 
 function VoiceSection() {
   const [preferences, update] = usePreferences();
@@ -563,6 +584,7 @@ export function SettingsForm() {
   return (
     <div className="flex flex-col gap-5">
       <GroqSection />
+      <ModelFallbackSection />
       <VoiceSection />
       <VisionSection />
       <SiteAccessSection />
@@ -572,7 +594,7 @@ export function SettingsForm() {
           <ThemeSwitch />
         </div>
       </Section>
-      <McpSection />
+      {MCP_AVAILABLE && <McpSection />}
     </div>
   );
 }

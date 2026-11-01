@@ -16,12 +16,28 @@ type RequestBody = PanelRequest extends infer R
     : never
   : never;
 
+const REQUEST_TIMEOUT_MS = 15_000;
+/** These wait on Groq, which the worker bounds by itself. */
+const SLOW_TIMEOUT_MS = 50_000;
+
 async function send(body: RequestBody): Promise<PanelResponse> {
-  const raw: unknown = await chrome.runtime.sendMessage({
-    protocolVersion: PROTOCOL_VERSION,
-    ...body,
-  });
-  return PanelResponseSchema.parse(raw);
+  const limit =
+    body.type === 'panel.transcribe' || body.type === 'panel.test_groq'
+      ? SLOW_TIMEOUT_MS
+      : REQUEST_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // A worker that is restarting may never answer, and no button should wait on it forever.
+    const raw: unknown = await Promise.race([
+      chrome.runtime.sendMessage({ protocolVersion: PROTOCOL_VERSION, ...body }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('The service worker did not respond')), limit);
+      }),
+    ]);
+    return PanelResponseSchema.parse(raw);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function unexpected(): never {
@@ -47,7 +63,8 @@ export async function testGroqConnection(): Promise<GroqStatus> {
 }
 
 export async function stopAgent(): Promise<void> {
-  await send({ type: 'panel.stop_agent' });
+  // Stop has to work. A first attempt can fail while the worker wakes up.
+  await send({ type: 'panel.stop_agent' }).catch(() => send({ type: 'panel.stop_agent' }));
 }
 
 export async function startAgent(instruction: string): Promise<string | null> {

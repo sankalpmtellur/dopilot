@@ -189,6 +189,7 @@ export function ConsoleApp() {
               <ConversationView
                 messages={console_.messages}
                 onSwitchTab={switchTab}
+                onRetry={console_.submit}
                 emptyState={
                   !showGuide ? (
                     <p className="py-8 text-center text-sm text-muted">

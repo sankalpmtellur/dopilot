@@ -1,5 +1,6 @@
 import { ModelError } from '@dopilot/agent-core';
 import type { ModelClient, ModelMessage, ModelResponse } from '@dopilot/agent-core';
+import type { ToolCall } from '@dopilot/shared';
 import Groq from 'groq-sdk';
 
 type GroqMessage = Groq.Chat.ChatCompletionMessageParam;
@@ -27,7 +28,7 @@ function toGroqMessage(message: ModelMessage): GroqMessage {
           tool_calls: message.toolCalls.map((call) => ({
             id: call.id,
             type: 'function' as const,
-            function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+            function: { name: call.name, arguments: historyArguments(call.arguments) },
           })),
         }),
       };
@@ -46,6 +47,33 @@ function toGroqMessage(message: ModelMessage): GroqMessage {
   }
 }
 
+/** Models that have refused the setting, so they are not sent it again this session. */
+const noParallelSetting = new Set<string>();
+
+/**
+ * Llama models sometimes write a call as text in their own format. It is still only a
+ * request: it goes through the same validation and safety checks as any other call.
+ */
+export function salvageToolCall(text: string | null | undefined): ToolCall | null {
+  if (!text) return null;
+  const match = /<function=([a-zA-Z_]+)[\s>]*(\{[\s\S]*?\})\s*(?:>|<\/function>|$)/.exec(
+    text.trim(),
+  );
+  if (!match?.[1] || !match[2]) return null;
+  try {
+    const parsed: unknown = JSON.parse(match[2]);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    return { id: `salvaged_${crypto.randomUUID()}`, name: match[1], arguments: parsed };
+  } catch {
+    return null;
+  }
+}
+
+/** History must hold valid arguments, or Groq rejects every later request in the task. */
+function historyArguments(args: unknown): string {
+  return JSON.stringify(typeof args === 'object' && args !== null ? args : {});
+}
+
 function parseArguments(raw: string): unknown {
   try {
     return JSON.parse(raw || '{}');
@@ -58,7 +86,29 @@ function parseArguments(raw: string): unknown {
 function readRetryAfter(error: InstanceType<typeof Groq.APIError>): number | undefined {
   const raw = (error.headers as Headers | undefined)?.get?.('retry-after');
   const seconds = Number(raw);
-  return raw && Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+  if (raw && Number.isFinite(seconds) && seconds >= 0) return seconds;
+  // Groq also states the wait in the message, as "try again in 1m7.2s".
+  const stated = /try again in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?/i.exec(
+    errorBody(error).message,
+  );
+  if (!stated || (!stated[1] && !stated[2] && !stated[3])) return undefined;
+  return Number(stated[1] ?? 0) * 3600 + Number(stated[2] ?? 0) * 60 + Number(stated[3] ?? 0);
+}
+
+function errorBody(error: InstanceType<typeof Groq.APIError>) {
+  const body = error.error as
+    | {
+        code?: string;
+        message?: string;
+        failed_generation?: string;
+        error?: { code?: string; message?: string; failed_generation?: string };
+      }
+    | undefined;
+  return {
+    code: body?.error?.code ?? body?.code ?? '',
+    message: body?.error?.message ?? body?.message ?? error.message ?? '',
+    failedGeneration: body?.error?.failed_generation ?? body?.failed_generation,
+  };
 }
 
 function describeWait(seconds: number | undefined): string {
@@ -101,12 +151,9 @@ export function toModelError(error: unknown): ModelError {
     return new ModelError('model_unavailable', 'That model is not available.');
   }
   if (error instanceof Groq.APIError) {
-    const body = error.error as
-      { code?: string; message?: string; error?: { code?: string; message?: string } } | undefined;
-    const code = body?.error?.code ?? body?.code ?? '';
-    const message = body?.error?.message ?? body?.message ?? error.message ?? '';
+    const { code, message } = errorBody(error);
 
-    if (error.status === 413) {
+    if (error.status === 413 || code === 'context_length_exceeded') {
       return new ModelError('request_too_large', 'This page was too large for the selected model.');
     }
     if (code === 'tool_use_failed') {
@@ -125,7 +172,7 @@ export function toModelError(error: unknown): ModelError {
     if (error.status && error.status < 500) {
       return new ModelError('server', 'Groq could not process that request.');
     }
-    return new ModelError('server', 'Groq is having problems.');
+    return new ModelError('server', 'Groq is having problems right now. This is not your setup.');
   }
   return new ModelError('server', 'The AI request failed.');
 }
@@ -145,35 +192,61 @@ export function createGroqModelClient(apiKey: string, fetchImpl?: typeof fetch):
     ...(fetchImpl && { fetch: fetchImpl }),
   });
 
-  return {
-    async complete({ model, messages, tools, signal }): Promise<ModelResponse> {
-      try {
-        const completion = await groq.chat.completions.create(
-          {
-            model,
-            messages: messages.map(toGroqMessage),
-            temperature: 0.1,
-            max_completion_tokens: MAX_COMPLETION_TOKENS,
-            ...(tools.length > 0 && {
-              tool_choice: 'auto' as const,
-              tools: tools.map((tool) => ({ type: 'function' as const, function: tool })),
-            }),
-          },
-          { signal },
-        );
+  async function request(
+    { model, messages, tools, signal }: Parameters<ModelClient['complete']>[0],
+    allowSetting: boolean,
+  ): Promise<ModelResponse> {
+    try {
+      const completion = await groq.chat.completions.create(
+        {
+          model,
+          messages: messages.map(toGroqMessage),
+          temperature: 0.1,
+          max_completion_tokens: MAX_COMPLETION_TOKENS,
+          ...(tools.length > 0 && {
+            tool_choice: 'auto' as const,
+            tools: tools.map((tool) => ({ type: 'function' as const, function: tool })),
+            // Several calls at once are planned blind, which is how two tabs get opened.
+            ...(allowSetting && { parallel_tool_calls: false }),
+          }),
+        },
+        { signal },
+      );
 
-        const reply = completion.choices[0]?.message;
-        return {
-          text: reply?.content ?? null,
-          toolCalls: (reply?.tool_calls ?? []).map((call) => ({
-            id: call.id,
-            name: call.function.name,
-            arguments: parseArguments(call.function.arguments),
-          })),
-        };
-      } catch (error) {
-        throw toModelError(error);
+      const reply = completion.choices[0]?.message;
+      const toolCalls = (reply?.tool_calls ?? []).map((call) => ({
+        id: call.id,
+        name: call.function.name,
+        arguments: parseArguments(call.function.arguments),
+      }));
+      const leaked = toolCalls.length === 0 ? salvageToolCall(reply?.content) : null;
+      return {
+        text: leaked ? null : (reply?.content ?? null),
+        toolCalls: leaked ? [leaked] : toolCalls,
+        ...(completion.usage && {
+          usage: {
+            promptTokens: completion.usage.prompt_tokens,
+            completionTokens: completion.usage.completion_tokens,
+          },
+        }),
+      };
+    } catch (error) {
+      if (error instanceof Groq.APIError) {
+        const { code, message, failedGeneration } = errorBody(error);
+        if (allowSetting && /parallel_tool_calls/i.test(message)) {
+          noParallelSetting.add(model);
+          return request({ model, messages, tools, signal }, false);
+        }
+        if (code === 'tool_use_failed') {
+          const salvaged = salvageToolCall(failedGeneration);
+          if (salvaged) return { text: null, toolCalls: [salvaged] };
+        }
       }
-    },
+      throw toModelError(error);
+    }
+  }
+
+  return {
+    complete: (options) => request(options, !noParallelSetting.has(options.model)),
   };
 }

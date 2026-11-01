@@ -6,11 +6,14 @@ import {
   validateToolCall,
 } from '@dopilot/browser-tools';
 import type { PolicyDecision } from '@dopilot/browser-tools';
+import { wrapUntrustedContent } from '@dopilot/agent-core';
 import {
   DescribeResultSchema,
   isRestrictedTabUrl,
+  parseSimpleInstruction,
   sanitizeTabTitle,
   sanitizeTabUrl,
+  siteSearchUrl,
   toolFailure,
   validateNavigationUrl,
 } from '@dopilot/shared';
@@ -23,7 +26,7 @@ import type {
 } from '@dopilot/shared';
 import { executeCommand, findCurrentTabId, listTabs } from './browser-commands';
 import type { BrowserApi } from './browser-commands';
-import { NoPageAccessError } from './content-client';
+import { ErrorPageError, NoPageAccessError, PageBusyError } from './content-client';
 import type { ContentPort } from './content-client';
 import type { VisionService } from './vision-service';
 
@@ -33,6 +36,13 @@ const INTERACTIVE_LIMIT = 40;
 const DEFAULT_WAIT_SECONDS = 5;
 const LOAD_TIMEOUT_MS = 15_000;
 const LOAD_POLL_MS = 150;
+const CONTEXT_TAB_LIMIT = 15;
+const READ_RETRY_MS = 400;
+/** Waiting for a page to load comes on top of the time the action itself takes. */
+const NAVIGATION_TOOL_TIMEOUT_MS = LOAD_TIMEOUT_MS + 10_000;
+const WAIT_MARGIN_MS = 8000;
+const VISION_TOOL_TIMEOUT_MS = 70_000;
+const EXTERNAL_CALL_TIMEOUT_MS = 50_000;
 
 export interface PermissionPort {
   hasTabDetails(): Promise<boolean>;
@@ -48,6 +58,10 @@ export interface ToolServiceDeps {
   sleep?: (ms: number) => Promise<void>;
   loadTimeoutMs?: number;
   vision?: VisionService;
+  /** True for tabs showing Dopilot's website, wherever a task was started from. */
+  isDopilotTab?: (tabId: number, url: string | undefined) => boolean;
+  /** MCP must not fight a running task for the same tabs. */
+  isAgentBusy?: () => Promise<boolean>;
 }
 
 /** Tools that read or act inside a page, and so need access to that page's site. */
@@ -147,8 +161,54 @@ export function createToolService({
   sleep = (ms) => new Promise((done) => setTimeout(done, ms)),
   loadTimeoutMs = LOAD_TIMEOUT_MS,
   vision,
+  isDopilotTab = () => false,
+  isAgentBusy,
 }: ToolServiceDeps) {
   const tabDetailsAskedIn = new Set<string>();
+  /** What the current task has opened, so asking twice does not leave two tabs. */
+  let opened: { runId: string; blankTab: number | null; urls: Map<string, number> } | null = null;
+
+  function openedFor(runId: string | undefined) {
+    if (!runId) return null;
+    if (opened?.runId !== runId) opened = { runId, blankTab: null, urls: new Map() };
+    return opened;
+  }
+
+  function abortIfStopped(signal: AbortSignal): void {
+    if (signal.aborted) throw new DOMException('Stopped', 'AbortError');
+  }
+
+  const dopilotTabRefusal = () =>
+    toolFailure(
+      'dopilot_tab',
+      'That tab is showing Dopilot itself. Use another tab, or open a new one.',
+      false,
+    );
+
+  async function isProtected(
+    tabId: number,
+    context: Pick<ToolContext, 'protectedTabId'>,
+  ): Promise<boolean> {
+    if (tabId === context.protectedTabId) return true;
+    const tab = await api.getTab(tabId).catch(() => null);
+    return tab ? isDopilotTab(tabId, tab.url) : false;
+  }
+
+  /** Comparing addresses, a trailing slash or a fragment is not a different page. */
+  function samePage(a: string | undefined, b: string): boolean {
+    if (!a) return false;
+    try {
+      const left = new URL(a);
+      const right = new URL(b);
+      return (
+        left.origin === right.origin &&
+        left.pathname.replace(/\/$/, '') === right.pathname.replace(/\/$/, '') &&
+        left.search === right.search
+      );
+    } catch {
+      return false;
+    }
+  }
 
   async function resolveTabId(
     args: Record<string, unknown>,
@@ -165,14 +225,59 @@ export function createToolService({
     return active === protectedTab ? findCurrentTabId(api, 'website', protectedTab) : active;
   }
 
-  async function waitForLoad(tabId: number): Promise<void> {
+  /** Resolves to whether the page finished loading. Stops early if the task is stopped. */
+  async function waitForLoad(tabId: number, signal?: AbortSignal): Promise<boolean> {
     const deadline = Date.now() + loadTimeoutMs;
     await sleep(LOAD_POLL_MS);
     while (Date.now() < deadline) {
+      if (signal?.aborted) return false;
       const tab = await api.getTab(tabId).catch(() => null);
-      if (!tab || tab.status === 'complete') return;
+      if (!tab || tab.status === 'complete') return true;
       await sleep(LOAD_POLL_MS);
     }
+    return false;
+  }
+
+  /**
+   * Reports a navigation only as far as it can be verified: a tab that closed, a site that
+   * failed to load and a page still loading are all different from having arrived.
+   */
+  async function arrival(
+    tabId: number,
+    requestedUrl: string,
+    verb: 'Opened' | 'Went to',
+    signal: AbortSignal,
+  ): Promise<ToolResult> {
+    const loaded = await waitForLoad(tabId, signal);
+    abortIfStopped(signal);
+    const tab = await api.getTab(tabId).catch(() => null);
+    if (!tab) return toolFailure('tab_closed', 'The tab closed before the page loaded.');
+
+    const origin = tab.url ? originOf(tab.url) : null;
+    if (loaded && origin && content.pageState && (await permissions.hasOrigin(origin))) {
+      if ((await content.pageState(tabId)) === 'error_page') {
+        return toolFailure(
+          'navigation_failed',
+          `${sanitizeTabUrl(requestedUrl) ?? 'That site'} did not load. It may be down, or the address may be wrong.`,
+        );
+      }
+    }
+
+    const requestedHost = new URL(requestedUrl).host;
+    const finalHost = tab.url && origin ? new URL(tab.url).host : null;
+    const redirected =
+      finalHost && finalHost !== requestedHost ? ` It redirected to ${finalHost}.` : '';
+    // Where it ended up, when that is known and is on the same site, not just where it was sent.
+    const shown =
+      (!redirected && tab.url && sanitizeTabUrl(tab.url)) || sanitizeTabUrl(requestedUrl);
+    return {
+      ok: true,
+      summary: `${verb} ${shown}.${loaded ? '' : ' It is still loading.'}${redirected}`,
+      currentTabId: tabId,
+      pageChanged: true,
+      untrusted: true,
+      data: { ...(await describeTab(tabId)), loaded },
+    };
   }
 
   async function describeTab(tabId: number): Promise<Record<string, unknown>> {
@@ -293,19 +398,8 @@ export function createToolService({
     context: ToolContext,
   ): Promise<ToolAssessment> {
     // The user is watching the task on this tab, so it must not be taken over or closed.
-    if (
-      context.protectedTabId !== undefined &&
-      context.protectedTabId !== null &&
-      args.tabId === context.protectedTabId
-    ) {
-      return {
-        decision: 'block',
-        result: toolFailure(
-          'dopilot_tab',
-          'That tab is showing Dopilot itself. Use another tab, or open a new one.',
-          false,
-        ),
-      };
+    if (typeof args.tabId === 'number' && (await isProtected(args.tabId, context))) {
+      return { decision: 'block', result: dopilotTabRefusal() };
     }
 
     if (name === 'open_tab' || name === 'navigate') {
@@ -321,6 +415,9 @@ export function createToolService({
       }
       if (name === 'navigate') {
         const tabId = await resolveTabId(args, context);
+        if (tabId !== null && (await isProtected(tabId, context))) {
+          return { decision: 'block', result: dopilotTabRefusal() };
+        }
         const tab = tabId === null ? null : await api.getTab(tabId).catch(() => null);
         // Going to a website would replace the page, including Dopilot's own settings.
         if (tab?.url && isRestrictedTabUrl(tab.url)) {
@@ -333,7 +430,15 @@ export function createToolService({
           };
         }
       }
-      return fromPolicy(name, assessToolCall(name, args, null), null, args);
+      return fromPolicy(
+        name,
+        assessToolCall(name, args, null, {
+          ...(context.instruction !== undefined && { instruction: context.instruction }),
+          pageDataRead: context.pageDataRead === true,
+        }),
+        null,
+        args,
+      );
     }
 
     if (name === 'get_tabs' || name === 'get_active_tab') {
@@ -343,6 +448,10 @@ export function createToolService({
     }
 
     if (name === 'close_tab') {
+      const tabId = await resolveTabId(args, context);
+      if (tabId !== null && (await isProtected(tabId, context))) {
+        return { decision: 'block', result: dopilotTabRefusal() };
+      }
       return fromPolicy(name, assessToolCall(name, args, null), null, args);
     }
 
@@ -378,6 +487,10 @@ export function createToolService({
     if (tabId === null) {
       return { decision: 'block', result: toolFailure('no_target_tab', 'There is no tab to use.') };
     }
+    // A task must not be able to press buttons on the console that gives it instructions.
+    if (await isProtected(tabId, context)) {
+      return { decision: 'block', result: dopilotTabRefusal() };
+    }
 
     const access = await checkPageAccess(tabId, context);
     if (access.decision !== 'allow') return access;
@@ -395,10 +508,20 @@ export function createToolService({
         type: 'content.describe',
         ...(typeof args.ref === 'string' && { ref: args.ref }),
       });
-    } catch {
+    } catch (error) {
       return {
         decision: 'block',
-        result: toolFailure('page_error', 'The page could not be checked. Look at it again.'),
+        result:
+          error instanceof ErrorPageError
+            ? toolFailure(
+                'error_page',
+                'This page failed to load, so there is nothing to use.',
+                false,
+              )
+            : toolFailure(
+                error instanceof PageBusyError ? 'page_busy' : 'page_error',
+                'The page could not be checked. It may still be loading, so look at it again.',
+              ),
       };
     }
     if (!reply.ok) return { decision: 'block', result: reply };
@@ -419,7 +542,10 @@ export function createToolService({
   ): Promise<ToolResult | null> {
     // Approval already happened in `assess`, so this is what `confirmed` records.
     const result = await executeCommand(api, command, { source: context.source, confirmed: true });
-    return result.ok ? null : toolFailure(result.code, result.message);
+    if (result.ok) return null;
+    // Trying something else cannot make a page exist, or an internal page usable.
+    const recoverable = result.code !== 'no_history' && result.code !== 'restricted_page';
+    return toolFailure(result.code, result.message, recoverable);
   }
 
   async function execute(
@@ -466,17 +592,56 @@ export function createToolService({
           const validated = url === undefined ? null : validateNavigationUrl(url);
           if (validated && !validated.ok)
             return toolFailure('blocked_url', validated.reason, false);
+          abortIfStopped(context.signal);
+
+          const memory = openedFor(context.runId);
+          if (validated) {
+            const already = memory?.urls.get(validated.url);
+            if (already !== undefined && (await api.getTab(already).catch(() => null))) {
+              return {
+                ok: true,
+                summary: `${sanitizeTabUrl(validated.url)} is already open in the tab this task opened.`,
+                currentTabId: already,
+                untrusted: true,
+                data: await describeTab(already),
+              };
+            }
+            // "Open a new tab" followed by "open YouTube" means one tab, not two.
+            const blank = memory?.blankTab ?? null;
+            if (blank !== null && (await api.getTab(blank).catch(() => null))) {
+              await api.navigateTab(blank, validated.url);
+              if (memory) {
+                memory.blankTab = null;
+                memory.urls.set(validated.url, blank);
+              }
+              return await arrival(blank, validated.url, 'Opened', context.signal);
+            }
+          } else if (
+            memory?.blankTab != null &&
+            (await api.getTab(memory.blankTab).catch(() => null))
+          ) {
+            return {
+              ok: true,
+              summary: 'The new tab this task opened is ready.',
+              currentTabId: memory.blankTab,
+            };
+          }
+
           const tab = await api.createTab(validated ? { url: validated.url } : {});
           if (tab.id === undefined) return toolFailure('execution_failed', 'The tab did not open.');
-          if (validated) await waitForLoad(tab.id);
-          return {
-            ok: true,
-            summary: validated ? `Opened ${sanitizeTabUrl(validated.url)}.` : 'Opened a new tab.',
-            currentTabId: tab.id,
-            pageChanged: true,
-            untrusted: true,
-            data: await describeTab(tab.id),
-          };
+          if (!validated) {
+            if (memory) memory.blankTab = tab.id;
+            return {
+              ok: true,
+              summary: 'Opened a new tab.',
+              currentTabId: tab.id,
+              pageChanged: true,
+              untrusted: true,
+              data: await describeTab(tab.id),
+            };
+          }
+          memory?.urls.set(validated.url, tab.id);
+          return await arrival(tab.id, validated.url, 'Opened', context.signal);
         }
 
         case 'navigate': {
@@ -484,35 +649,45 @@ export function createToolService({
           if (!validated.ok) return toolFailure('blocked_url', validated.reason, false);
           const tabId = await resolveTabId(args, context);
           if (tabId === null) return toolFailure('no_target_tab', 'There is no tab to use.');
+          abortIfStopped(context.signal);
+          const before = await api.getTab(tabId).catch(() => null);
+          // Loading the same page again would lose the user's place and prove nothing.
+          if (before?.status === 'complete' && samePage(before.url, validated.url)) {
+            return {
+              ok: true,
+              summary: `Already at ${sanitizeTabUrl(validated.url)}.`,
+              currentTabId: tabId,
+              untrusted: true,
+              data: await describeTab(tabId),
+            };
+          }
+          const memory = openedFor(context.runId);
+          if (memory?.blankTab === tabId) memory.blankTab = null;
           await api.navigateTab(tabId, validated.url);
-          await waitForLoad(tabId);
-          return {
-            ok: true,
-            summary: `Went to ${sanitizeTabUrl(validated.url)}.`,
-            currentTabId: tabId,
-            pageChanged: true,
-            untrusted: true,
-            data: await describeTab(tabId),
-          };
+          return await arrival(tabId, validated.url, 'Went to', context.signal);
         }
 
         case 'switch_tab': {
           const tabId = args.tabId as number;
+          abortIfStopped(context.signal);
           const failure = await runCommand({ action: 'tab.switch', target: { tabId } }, context);
           if (failure) return failure;
+          const described = await describeTab(tabId);
+          const { title } = described as { title?: string };
           return {
             ok: true,
-            summary: 'Switched tabs.',
+            summary: title ? `Switched to “${title.slice(0, 80)}”.` : 'Switched tabs.',
             currentTabId: tabId,
             pageChanged: true,
             untrusted: true,
-            data: await describeTab(tabId),
+            data: described,
           };
         }
 
         case 'close_tab': {
           const tabId = await resolveTabId(args, context);
           if (tabId === null) return toolFailure('no_target_tab', 'There is no tab to close.');
+          abortIfStopped(context.signal);
           const failure = await runCommand({ action: 'tab.close', target: { tabId } }, context);
           if (failure) return failure;
           const next = await findCurrentTabId(
@@ -536,16 +711,19 @@ export function createToolService({
           const action = (
             { reload_tab: 'tab.reload', go_back: 'tab.back', go_forward: 'tab.forward' } as const
           )[name];
+          abortIfStopped(context.signal);
           const failure = await runCommand({ action, target: { tabId } }, context);
           if (failure) return failure;
-          await waitForLoad(tabId);
+          const loaded = await waitForLoad(tabId, context.signal);
           return {
             ok: true,
-            summary: {
-              reload_tab: 'Reloaded.',
-              go_back: 'Went back.',
-              go_forward: 'Went forward.',
-            }[name],
+            summary: `${
+              {
+                reload_tab: 'Reloaded.',
+                go_back: 'Went back.',
+                go_forward: 'Went forward.',
+              }[name]
+            }${loaded ? '' : ' It is still loading.'}`,
             currentTabId: tabId,
             pageChanged: true,
             untrusted: true,
@@ -571,11 +749,13 @@ export function createToolService({
           current,
         );
         if ('failure' in target) return target.failure;
+        abortIfStopped(context.signal);
         return await sendToPage(
           target.tabId,
           target.interactive
             ? { type: 'content.click', ref: target.ref }
             : { type: 'content.click_point', ref: target.ref, ...target.viewportPoint },
+          context.signal,
         );
       }
 
@@ -585,8 +765,12 @@ export function createToolService({
       const tabId = await resolveTabId(args, context);
       if (tabId === null) return toolFailure('no_target_tab', 'There is no tab to use.');
 
-      return await sendToPage(tabId, request);
+      abortIfStopped(context.signal);
+      return await sendToPage(tabId, request, context.signal);
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return toolFailure('cancelled', 'Stopped.', false);
+      }
       if (error instanceof NoPageAccessError) {
         return toolFailure(
           'no_page_access',
@@ -594,84 +778,361 @@ export function createToolService({
           false,
         );
       }
+      if (error instanceof ErrorPageError) {
+        return toolFailure(
+          'error_page',
+          'This page failed to load, so there is nothing to use.',
+          false,
+        );
+      }
       return toolFailure('execution_failed', 'That action could not be completed.');
     }
   }
 
-  async function sendToPage(tabId: number, request: ContentRequest): Promise<ToolResult> {
+  const READ_REQUESTS = new Set<ContentRequest['type']>([
+    'content.metadata',
+    'content.page_content',
+    'content.visible_text',
+    'content.interactive',
+    'content.wait',
+  ]);
+
+  async function sendToPage(
+    tabId: number,
+    request: ContentRequest,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
     const canNavigate =
       request.type === 'content.click' ||
       request.type === 'content.press' ||
       request.type === 'content.click_point';
+    const before = canNavigate ? await api.getTab(tabId).catch(() => null) : null;
     let result: ToolResult;
     try {
-      result = await content.send(tabId, request);
-    } catch (error) {
-      if (error instanceof NoPageAccessError) throw error;
-      // The page unloading ends the content script before it can reply.
-      if (!canNavigate) {
-        return toolFailure('page_changed', 'The page changed during that. Look at it again.');
+      try {
+        result = await content.send(tabId, request);
+      } catch (error) {
+        // Reading twice is harmless, so a page that was mid-load gets a second chance.
+        if (!READ_REQUESTS.has(request.type) || error instanceof NoPageAccessError) throw error;
+        if (error instanceof ErrorPageError) throw error;
+        await sleep(READ_RETRY_MS);
+        if (signal?.aborted) throw error;
+        result = await content.send(tabId, request);
       }
-      await waitForLoad(tabId);
+    } catch (error) {
+      if (error instanceof NoPageAccessError || error instanceof ErrorPageError) throw error;
+      if (READ_REQUESTS.has(request.type)) {
+        return toolFailure(
+          error instanceof PageBusyError ? 'page_busy' : 'page_changed',
+          'The page did not answer. It may still be loading, or showing a dialog. Look at it again shortly.',
+        );
+      }
+      if (!canNavigate) {
+        return toolFailure(
+          'outcome_unknown',
+          'The page changed or stopped answering during that, so it may not have worked. Look at the page before trying again.',
+        );
+      }
+      // A page unloading ends the content script before it can reply, which looks the same
+      // as the action never arriving. Only a real change of page counts as having worked.
+      const loaded = await waitForLoad(tabId, signal);
+      const after = await api.getTab(tabId).catch(() => null);
+      const navigated = after !== null && (after.url !== before?.url || after.status === 'loading');
+      if (!navigated) {
+        return toolFailure(
+          'outcome_unknown',
+          'The page did not confirm that action and did not change, so it may not have worked. Look at the page before trying again, and do not repeat it blindly.',
+        );
+      }
       return {
         ok: true,
-        summary: 'Done. The page navigated away.',
+        summary: `Done. The page navigated away.${loaded ? '' : ' It is still loading.'}`,
         pageChanged: true,
         untrusted: true,
         data: await describeTab(tabId),
       };
     }
-    if (result.ok && result.pageChanged && canNavigate) {
-      await waitForLoad(tabId);
-      return { ...result, untrusted: true, data: await describeTab(tabId) };
+    // Replies quote labels and titles from the page, wherever they appear in the result.
+    const marked: ToolResult = { ...result, untrusted: true };
+    if (marked.ok && marked.pageChanged && canNavigate) {
+      await waitForLoad(tabId, signal);
+      return { ...marked, data: await describeTab(tabId) };
     }
-    return result;
+    return marked;
   }
 
   async function describeContext(source: AgentSource, protectedTabId?: number | null) {
-    const [tabs, currentTabId, details] = await Promise.all([
+    const [tabs, rawTabs, currentTabId, details] = await Promise.all([
       listTabs(api),
+      api.queryTabs({ windowType: 'normal' }),
       findCurrentTabId(api, source, protectedTabId ?? undefined),
       permissions.hasTabDetails(),
     ]);
     const current = tabs.find((tab) => tab.id === currentTabId);
-    const protectedNote =
-      protectedTabId !== undefined && protectedTabId !== null
-        ? ` Tab ${protectedTabId} shows Dopilot itself and cannot be used.`
-        : '';
-    const description = current
-      ? `Current tab: id ${current.id}${current.title ? `, “${current.title.slice(0, 80)}”` : ''}${
-          current.url ? `, ${current.url.slice(0, 120)}` : ''
-        }${current.restricted ? ' (internal page)' : ''}.`
-      : 'There is no current tab, so open one if needed.';
-    return {
-      text: `${description}${protectedNote} ${tabs.length} tabs open.${details ? '' : ' Tab titles are hidden until allowed.'}`,
-      currentTabId,
-    };
+    const previous = previousTabId(rawTabs, currentTabId, protectedTabId);
+    const dopilot = rawTabs
+      .filter(
+        (tab) =>
+          tab.id !== undefined && (tab.id === protectedTabId || isDopilotTab(tab.id, tab.url)),
+      )
+      .map((tab) => tab.id);
+    const lines = [
+      current
+        ? `Current tab: id ${current.id}${current.restricted ? ' (internal page, cannot be used)' : ''}.`
+        : 'There is no current tab, so open one if needed.',
+      ...(previous !== null ? [`Previous tab: id ${previous}.`] : []),
+      ...(dopilot.length > 0
+        ? [`Tab ${dopilot.join(', ')} shows Dopilot itself and cannot be used.`]
+        : []),
+      `${tabs.length} tabs open.${details ? '' : ' Tab titles are hidden until allowed.'}`,
+    ];
+    // Titles and addresses are written by websites, so they are marked as such here too.
+    const listed = tabs.slice(0, CONTEXT_TAB_LIMIT).flatMap(({ id, title, url }) =>
+      title || url
+        ? [
+            {
+              id,
+              ...(title && { title: title.slice(0, 80) }),
+              ...(url && { url: url.slice(0, 120) }),
+            },
+          ]
+        : [],
+    );
+    if (listed.length > 0) lines.push(wrapUntrustedContent(JSON.stringify(listed)));
+    return { text: lines.join('\n'), currentTabId };
   }
 
-  /** The same checks as the agent. MCP cannot show a prompt, so it is refused instead. */
+  /** The tab used most recently before this one. Browsers keep this for every tab. */
+  function previousTabId(
+    tabs: chrome.tabs.Tab[],
+    currentTabId: number | null,
+    protectedTabId?: number | null,
+  ): number | null {
+    const others = tabs
+      .filter(
+        (tab) =>
+          tab.id !== undefined &&
+          tab.id !== currentTabId &&
+          tab.id !== protectedTabId &&
+          !isDopilotTab(tab.id, tab.url),
+      )
+      .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+    return others[0]?.id ?? null;
+  }
+
+  /**
+   * Turns a simple instruction into tool calls, or null if it needs real judgement. Those
+   * calls take the same route as a model's, so nothing here bypasses a check. A tab named
+   * in the instruction must match exactly one open tab, because otherwise it needs asking.
+   */
+  async function planSimple(
+    instruction: string,
+    source: AgentSource,
+    protectedTabId?: number | null,
+  ) {
+    const steps = parseSimpleInstruction(instruction);
+    if (!steps) return null;
+
+    const [tabs, rawTabs, startTab] = await Promise.all([
+      listTabs(api),
+      api.queryTabs({ windowType: 'normal' }),
+      findCurrentTabId(api, source, protectedTabId ?? undefined),
+    ]);
+    let current = startTab;
+    let previous = previousTabId(rawTabs, startTab, protectedTabId);
+    const calls: { name: string; arguments: Record<string, unknown> }[] = [];
+    let openedSite: string | null = null;
+    let inFreshTab = false;
+
+    const switchTo = (tabId: number) => {
+      calls.push({ name: 'switch_tab', arguments: { tabId } });
+      previous = current;
+      current = tabId;
+    };
+    const currentIsUnusable = () => {
+      const raw = rawTabs.find((tab) => tab.id === current);
+      const info = tabs.find((tab) => tab.id === current);
+      return (
+        current === null ||
+        current === protectedTabId ||
+        info?.restricted === true ||
+        isDopilotTab(current, raw?.url)
+      );
+    };
+    const open = (url: string, newTab: boolean) => {
+      if (inFreshTab) {
+        const last = calls.at(-1);
+        if (last?.name === 'open_tab') last.arguments = { url };
+        else calls.push({ name: 'navigate', arguments: { url } });
+      } else if (newTab || currentIsUnusable()) {
+        calls.push({ name: 'open_tab', arguments: { url } });
+        inFreshTab = true;
+      } else {
+        calls.push({ name: 'navigate', arguments: { url } });
+      }
+    };
+
+    for (const step of steps) {
+      switch (step.kind) {
+        case 'new_tab':
+          calls.push({ name: 'open_tab', arguments: {} });
+          inFreshTab = true;
+          openedSite = null;
+          break;
+        case 'open':
+          open(step.url, step.newTab);
+          openedSite = step.site ?? null;
+          break;
+        case 'search': {
+          const site: string | null = step.site ?? openedSite;
+          const url = site ? siteSearchUrl(site, step.query) : null;
+          if (!url || !site) return null;
+          // Opening a site and then searching it needs only the one page load.
+          const last = calls.at(-1);
+          if (
+            openedSite === site &&
+            last &&
+            (last.name === 'open_tab' || last.name === 'navigate')
+          ) {
+            last.arguments = { ...last.arguments, url };
+          } else {
+            open(url, true);
+          }
+          openedSite = site;
+          break;
+        }
+        case 'switch_named': {
+          const wanted = step.name.toLowerCase().replace(/\s+/g, '');
+          const matches = tabs.filter((tab) => {
+            if (tab.restricted || tab.id === protectedTabId) return false;
+            const raw = rawTabs.find((item) => item.id === tab.id);
+            if (isDopilotTab(tab.id, raw?.url)) return false;
+            return `${tab.title ?? ''} ${tab.url ?? ''}`
+              .toLowerCase()
+              .replace(/\s+/g, '')
+              .includes(wanted);
+          });
+          if (matches.length !== 1 || !matches[0]) return null;
+          switchTo(matches[0].id);
+          inFreshTab = false;
+          break;
+        }
+        case 'switch_position': {
+          const tab = tabs[step.position - 1];
+          if (!tab) return null;
+          switchTo(tab.id);
+          inFreshTab = false;
+          break;
+        }
+        case 'switch_previous':
+          if (previous === null) return null;
+          switchTo(previous);
+          inFreshTab = false;
+          break;
+        case 'scroll_direction':
+          calls.push({ name: 'scroll_page', arguments: { direction: step.direction } });
+          break;
+        case 'scroll_text':
+          calls.push({ name: 'scroll_page', arguments: { text: step.text } });
+          break;
+        case 'reload':
+          calls.push({ name: 'reload_tab', arguments: {} });
+          break;
+        case 'back':
+          calls.push({ name: 'go_back', arguments: {} });
+          break;
+        case 'forward':
+          calls.push({ name: 'go_forward', arguments: {} });
+          break;
+        case 'close':
+          calls.push({ name: 'close_tab', arguments: {} });
+          break;
+      }
+    }
+    return calls.length > 0 ? calls : null;
+  }
+
+  function toolTimeoutMs(name: string, args: Record<string, unknown>): number | undefined {
+    if (
+      [
+        'open_tab',
+        'navigate',
+        'reload_tab',
+        'go_back',
+        'go_forward',
+        'click_element',
+        'press_key',
+        'click_visual_target',
+      ].includes(name)
+    ) {
+      return NAVIGATION_TOOL_TIMEOUT_MS;
+    }
+    if (name === 'wait_for_element') {
+      return (
+        ((args.timeoutSeconds as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 +
+        WAIT_MARGIN_MS
+      );
+    }
+    return CAPTURE_TOOLS.has(name) ? VISION_TOOL_TIMEOUT_MS : undefined;
+  }
+
+  /**
+   * The same checks as the agent. MCP cannot show a prompt, so it is refused instead. Every
+   * call is bounded, so one stuck page cannot stop the bridge taking further calls.
+   */
   async function runExternalCall(name: string, rawArgs: unknown): Promise<ToolResult> {
     const validation = validateToolCall(name, rawArgs);
     if (!validation.ok) return toolFailure('invalid_arguments', validation.error, false);
 
-    const context: ToolContext = {
-      source: 'panel',
-      currentTabId: null,
-      signal: new AbortController().signal,
-    };
-    const assessment = await assess(name, validation.args, context);
-    if (assessment.decision === 'block') return assessment.result;
-    if (assessment.decision === 'approve') {
+    if (validation.tool.effect === 'act' && (await isAgentBusy?.())) {
       return toolFailure(
-        'approval_required',
-        `${assessment.title} This needs approval, so it can only be done through the Dopilot agent, or by granting access in its settings.`,
-        false,
+        'agent_busy',
+        'A Dopilot task is running in this browser. Wait for it to finish, or stop it first.',
       );
     }
-    return execute(name, validation.args, context);
+
+    const abort = new AbortController();
+    const context: ToolContext = { source: 'panel', currentTabId: null, signal: abort.signal };
+    const work = (async () => {
+      const assessment = await assess(name, validation.args, context);
+      if (assessment.decision === 'block') return assessment.result;
+      if (assessment.decision === 'approve') {
+        return toolFailure(
+          'approval_required',
+          `${assessment.title} This needs approval, so it can only be done through the Dopilot agent, or by granting access in its settings.`,
+          false,
+        );
+      }
+      return execute(name, validation.args, context);
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<ToolResult>((resolve) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        resolve(
+          toolFailure(
+            validation.tool.effect === 'act' ? 'outcome_unknown' : 'tool_timeout',
+            'This did not finish in time.',
+          ),
+        );
+      }, EXTERNAL_CALL_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([work, timeout]);
+    } catch {
+      return toolFailure('execution_failed', 'That action could not be completed.');
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
-  const toolbox: AgentToolbox = { definitions: toolSpecs(), assess, execute, describeContext };
+  const toolbox: AgentToolbox = {
+    definitions: toolSpecs(),
+    assess,
+    execute,
+    describeContext,
+    planSimple,
+    toolTimeoutMs,
+  };
   return { toolbox, runExternalCall };
 }

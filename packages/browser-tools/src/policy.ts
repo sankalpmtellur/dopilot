@@ -14,6 +14,13 @@ export type PolicyDecision =
   | { decision: 'approve'; category: ApprovalCategory; reason: string }
   | { decision: 'block'; code: string; reason: string; stopTask?: boolean };
 
+/** What the task has done so far, for decisions that depend on more than one call. */
+export interface PolicyContext {
+  instruction?: string;
+  /** Webpage content has reached the model during this task. */
+  pageDataRead?: boolean;
+}
+
 const ALLOW: PolicyDecision = { decision: 'allow' };
 
 const RULES: [ApprovalCategory, RegExp, string][] = [
@@ -127,7 +134,72 @@ function assessKey(key: unknown, facts: DescribeResult): PolicyDecision {
   return ALLOW;
 }
 
-function assessAddress(url: unknown): PolicyDecision {
+/** Long enough to carry something worth stealing, and too long to be a chance match. */
+const MIN_CARRIED_DATA_CHARS = 16;
+
+function isPrivateHost(host: string): boolean {
+  return (
+    host === 'localhost' ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    host === '[::1]'
+  );
+}
+
+function appearsIn(instruction: string, value: string): boolean {
+  const normalize = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  return normalize(instruction).includes(normalize(value));
+}
+
+/**
+ * Once a task has read a webpage, an address the model builds might be what that page told
+ * it to build, with the user's data in it or pointing at their router. Whatever came from
+ * the user's own instruction is fine. Anything else is theirs to approve.
+ */
+function assessAfterReading(url: string, instruction: string): PolicyDecision {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.includes('://') ? url : `https://${url}`);
+  } catch {
+    return ALLOW;
+  }
+  const named = appearsIn(instruction, parsed.hostname.replace(/^www\./, ''));
+  if (isPrivateHost(parsed.hostname) && !named) {
+    return {
+      decision: 'approve',
+      category: 'data_in_address',
+      reason: 'A page led here, and this address is on your own network.',
+    };
+  }
+  const values = [
+    ...parsed.searchParams.values(),
+    ...parsed.pathname.split('/').map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    }),
+  ];
+  const unexplained = values.some(
+    (value) => value.length >= MIN_CARRIED_DATA_CHARS && !appearsIn(instruction, value),
+  );
+  if (unexplained && !named) {
+    return {
+      decision: 'approve',
+      category: 'data_in_address',
+      reason: 'This address contains something you did not ask for, which could be page data.',
+    };
+  }
+  return ALLOW;
+}
+
+function assessAddress(url: unknown, context?: PolicyContext): PolicyDecision {
   if (typeof url !== 'string') return ALLOW;
   if (url.length > MAX_UNREVIEWED_URL_LENGTH) {
     return {
@@ -143,6 +215,7 @@ function assessAddress(url: unknown): PolicyDecision {
       reason: 'This address looks like it changes something.',
     };
   }
+  if (context?.pageDataRead) return assessAfterReading(url, context.instruction ?? '');
   return ALLOW;
 }
 
@@ -155,11 +228,12 @@ export function assessToolCall(
   name: string,
   args: Record<string, unknown>,
   facts: DescribeResult | null,
+  context?: PolicyContext,
 ): PolicyDecision {
   switch (name) {
     case 'open_tab':
     case 'navigate':
-      return assessAddress(args.url);
+      return assessAddress(args.url, context);
 
     case 'close_tab':
       return { decision: 'approve', category: 'destructive', reason: 'This closes a tab.' };

@@ -28,7 +28,7 @@ const state: ExtensionState = {
     speechModels: [],
   },
   agent: null,
-  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto' },
+  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true },
   recentActions: [],
 };
 

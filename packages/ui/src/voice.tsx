@@ -102,6 +102,12 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/** A permission prompt can sit unanswered, and side panels may never show one at all. */
+const MIC_START_TIMEOUT_MS = 15_000;
+const TRANSCRIBE_TIMEOUT_MS = 45_000;
+/** A browser speech session should end by itself. This covers the one that never does. */
+const RECOGNITION_LIMIT_MS = MAX_RECORDING_MS + 5000;
+
 const MIC_ERRORS: Record<string, VoiceError> = {
   NotAllowedError: {
     kind: 'mic_blocked',
@@ -112,6 +118,11 @@ const MIC_ERRORS: Record<string, VoiceError> = {
     message: 'Microphone access is blocked. Allow it to use voice.',
   },
   NotFoundError: { kind: 'no_mic', message: 'No microphone was found.' },
+  NotReadableError: {
+    kind: 'failed',
+    message: 'The microphone is being used by another app. Close it and try again.',
+  },
+  AbortError: { kind: 'failed', message: 'The microphone could not be started. Try again.' },
 };
 
 /**
@@ -160,6 +171,14 @@ export function useVoiceInput(options: VoiceInputOptions) {
       let finalText = '';
       let interimText = '';
       let failed = false;
+      const limit = setTimeout(() => {
+        // onend may never come, so this cannot wait for it.
+        failed = true;
+        session.current = null;
+        recognition.abort();
+        setStatus('idle');
+        setError({ kind: 'failed', message: 'Listening stopped responding. Try again.' });
+      }, RECOGNITION_LIMIT_MS);
 
       recognition.onresult = (event) => {
         interimText = '';
@@ -174,6 +193,7 @@ export function useVoiceInput(options: VoiceInputOptions) {
 
       recognition.onerror = ({ error: code }) => {
         if (code === 'aborted') return;
+        clearTimeout(limit);
         failed = true;
         session.current = null;
         setStatus('idle');
@@ -196,6 +216,7 @@ export function useVoiceInput(options: VoiceInputOptions) {
       };
 
       recognition.onend = () => {
+        clearTimeout(limit);
         session.current = null;
         if (failed) return;
         deliver(`${finalText}${interimText}`);
@@ -206,7 +227,14 @@ export function useVoiceInput(options: VoiceInputOptions) {
         cancel: () => recognition.abort(),
       };
       setStatus('listening');
-      recognition.start();
+      try {
+        recognition.start();
+      } catch {
+        clearTimeout(limit);
+        session.current = null;
+        setStatus('idle');
+        setError({ kind: 'failed', message: 'Voice input could not be started. Try again.' });
+      }
     },
     [deliver],
   );
@@ -223,12 +251,27 @@ export function useVoiceInput(options: VoiceInputOptions) {
     };
 
     let stream: MediaStream;
+    let gaveUp = false;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const opening = navigator.mediaDevices.getUserMedia({ audio: true });
+      // If it opens after all, it must still be closed, or the microphone stays on.
+      void opening.then(
+        (late) => {
+          if (gaveUp) for (const track of late.getTracks()) track.stop();
+        },
+        () => undefined,
+      );
+      stream = await new Promise<MediaStream>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          gaveUp = true;
+          reject(new DOMException('Timed out', 'NotAllowedError'));
+        }, MIC_START_TIMEOUT_MS);
+        void opening.finally(() => clearTimeout(timer)).then(resolve, reject);
+      });
     } catch (caught) {
       session.current = null;
       setStatus('idle');
-      const name = caught instanceof Error ? caught.name : '';
+      const name = (caught as { name?: string } | null)?.name ?? '';
       setError(
         MIC_ERRORS[name] ?? { kind: 'failed', message: 'The microphone could not be started.' },
       );
@@ -248,21 +291,38 @@ export function useVoiceInput(options: VoiceInputOptions) {
       return;
     }
 
-    const { full, base } = recordingType();
-    const recorder = new MediaRecorder(stream, {
-      ...(full && { mimeType: full }),
-      audioBitsPerSecond: 24_000,
-    });
-    const chunks: Blob[] = [];
     const release = () => {
       for (const track of stream.getTracks()) track.stop();
     };
+    const { full, base } = recordingType();
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, {
+        ...(full && { mimeType: full }),
+        audioBitsPerSecond: 24_000,
+      });
+    } catch {
+      release();
+      session.current = null;
+      setStatus('idle');
+      setError({ kind: 'failed', message: 'This browser could not record audio.' });
+      return;
+    }
+    const chunks: Blob[] = [];
     const limit = setTimeout(() => {
       if (recorder.state === 'recording') recorder.stop();
     }, MAX_RECORDING_MS);
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      clearTimeout(limit);
+      release();
+      session.current = null;
+      recorder.onstop = null;
+      setStatus('idle');
+      setError({ kind: 'failed', message: 'Recording stopped unexpectedly. Try again.' });
     };
     recorder.onstop = () => {
       clearTimeout(limit);
@@ -272,12 +332,23 @@ export function useVoiceInput(options: VoiceInputOptions) {
         setStatus('idle');
         return;
       }
+      const recording = new Blob(chunks, { type: base });
+      chunks.length = 0;
+      if (recording.size === 0) {
+        setStatus('idle');
+        setError({ kind: 'no_speech', message: 'I didn’t hear anything. Try again.' });
+        return;
+      }
       setStatus('processing');
       void (async () => {
         try {
-          const audio = await blobToBase64(new Blob(chunks, { type: base }));
-          chunks.length = 0;
-          const { text, error: problem } = await latest.current.transcribe(audio, base);
+          const audio = await blobToBase64(recording);
+          const { text, error: problem } = await Promise.race([
+            latest.current.transcribe(audio, base),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error('Timed out')), TRANSCRIBE_TIMEOUT_MS);
+            }),
+          ]);
           if (cancelled.current) {
             setStatus('idle');
             return;
@@ -291,7 +362,12 @@ export function useVoiceInput(options: VoiceInputOptions) {
           deliver(text);
         } catch {
           setStatus('idle');
-          setError({ kind: 'failed', message: 'That recording could not be processed.' });
+          if (!cancelled.current) {
+            setError({
+              kind: 'failed',
+              message: 'That recording could not be transcribed. Try again, or type instead.',
+            });
+          }
         }
       })();
     };
@@ -306,7 +382,16 @@ export function useVoiceInput(options: VoiceInputOptions) {
         else release();
       },
     };
-    recorder.start();
+    try {
+      recorder.start();
+    } catch {
+      clearTimeout(limit);
+      release();
+      session.current = null;
+      setStatus('idle');
+      setError({ kind: 'failed', message: 'This browser could not record audio.' });
+      return;
+    }
     setStatus('listening');
   }, [deliver]);
 

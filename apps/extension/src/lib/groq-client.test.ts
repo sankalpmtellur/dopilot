@@ -1,7 +1,7 @@
 import { ModelError } from '@dopilot/agent-core';
 import { toolSpecs } from '@dopilot/browser-tools';
 import { describe, expect, it, vi } from 'vitest';
-import { createGroqModelClient } from './groq-client';
+import { createGroqModelClient, salvageToolCall } from './groq-client';
 
 const KEY = 'gsk_test_key_abcdefghijklmnopqrstuvwxyz';
 
@@ -184,5 +184,123 @@ describe('Groq errors', () => {
     const pending = failure(hanging, controller.signal);
     controller.abort();
     expect((await pending).kind).toBe('cancelled');
+  });
+});
+
+describe('Groq’s actual behavior', () => {
+  const body = (stub: ReturnType<typeof reply>, index = -1) =>
+    JSON.parse(String(stub.mock.calls.at(index)?.[1]?.body)) as Record<string, unknown>;
+  const tool = {
+    name: 'open_tab',
+    description: 'd',
+    parameters: { type: 'object', properties: {} },
+  };
+
+  it('asks for one call at a time, so a batch cannot open two tabs', async () => {
+    const stub = reply(200, { choices: [{ message: { content: 'ok' } }] });
+    await createGroqModelClient(KEY, stub).complete({ ...request, tools: [tool] });
+    expect(body(stub).parallel_tool_calls).toBe(false);
+  });
+
+  it('retries without that setting if a model refuses it', async () => {
+    let calls = 0;
+    const stub = vi.fn<typeof fetch>(async () => {
+      calls += 1;
+      return calls === 1
+        ? Response.json(
+            { error: { message: '`parallel_tool_calls` is not supported' } },
+            { status: 400 },
+          )
+        : Response.json({ choices: [{ message: { content: 'ok' } }] });
+    });
+    const reply2 = await createGroqModelClient(KEY, stub).complete({
+      ...request,
+      model: 'refuses-parallel',
+      tools: [tool],
+    });
+    expect(reply2.text).toBe('ok');
+    expect(JSON.parse(String(stub.mock.calls[1]?.[1]?.body)).parallel_tool_calls).toBeUndefined();
+  });
+
+  it('recovers a call from a tool_use_failed error without another request', async () => {
+    const stub = reply(400, {
+      error: {
+        code: 'tool_use_failed',
+        message: 'Failed to call a function',
+        failed_generation: '<function=open_tab{"url": "https://youtube.com"}</function>',
+      },
+    });
+    const result = await createGroqModelClient(KEY, stub).complete(request);
+    expect(result.toolCalls[0]).toMatchObject({
+      name: 'open_tab',
+      arguments: { url: 'https://youtube.com' },
+    });
+    expect(stub).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a call a model wrote out as text', async () => {
+    const stub = reply(200, {
+      choices: [{ message: { content: '<function=navigate>{"url":"https://a.com"}</function>' } }],
+    });
+    const result = await createGroqModelClient(KEY, stub).complete(request);
+    expect(result.text).toBeNull();
+    expect(result.toolCalls[0]?.name).toBe('navigate');
+  });
+
+  it('does not invent a call from ordinary text or broken JSON', () => {
+    expect(salvageToolCall('I opened the page.')).toBeNull();
+    expect(salvageToolCall('<function=navigate>{not json}</function>')).toBeNull();
+  });
+
+  it('sends only valid arguments in history, or every later request would fail', async () => {
+    const stub = reply(200, { choices: [{ message: { content: 'ok' } }] });
+    await createGroqModelClient(KEY, stub).complete({
+      ...request,
+      messages: [
+        { role: 'user', content: 'x' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c', name: 'navigate', arguments: 'not json' }],
+        },
+        { role: 'tool', toolCallId: 'c', content: 'failed' },
+      ],
+    });
+    const sent = body(stub).messages as { tool_calls?: { function: { arguments: string } }[] }[];
+    expect(sent[1]?.tool_calls?.[0]?.function.arguments).toBe('{}');
+  });
+
+  it('reads the wait from the message when there is no header', async () => {
+    const error = await failure(
+      reply(429, { error: { message: 'Rate limit reached. Please try again in 1m7.5s.' } }),
+    );
+    expect(error.kind).toBe('rate_limited');
+    expect(error.retryAfterSeconds).toBeCloseTo(67.5);
+  });
+
+  it('treats a context overflow as too large, so the runner can trim', async () => {
+    const error = await failure(
+      reply(400, { error: { code: 'context_length_exceeded', message: 'too long' } }),
+    );
+    expect(error.kind).toBe('request_too_large');
+  });
+
+  it('tells a retired model apart from a request problem', async () => {
+    expect(
+      (await failure(reply(400, { error: { code: 'model_decommissioned', message: 'gone' } })))
+        .kind,
+    ).toBe('model_unavailable');
+    expect((await failure(reply(404, { error: { message: 'no such model' } }))).kind).toBe(
+      'model_unavailable',
+    );
+  });
+
+  it('reports usage for diagnostics', async () => {
+    const stub = reply(200, {
+      choices: [{ message: { content: 'ok' } }],
+      usage: { prompt_tokens: 120, completion_tokens: 8 },
+    });
+    const result = await createGroqModelClient(KEY, stub).complete(request);
+    expect(result.usage).toEqual({ promptTokens: 120, completionTokens: 8 });
   });
 });

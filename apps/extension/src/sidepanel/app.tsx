@@ -86,7 +86,7 @@ export function App() {
   const stopTask = () => {
     console_.stop();
     spoken.interrupt();
-    void stopAgent().then(refresh);
+    void stopAgent().finally(() => void refresh());
   };
   const voice = useVoiceInput({
     choice: state?.preferences.voiceEngine ?? 'auto',
@@ -163,6 +163,7 @@ export function App() {
         <ConversationView
           messages={console_.messages}
           onSwitchTab={switchTab}
+          onRetry={console_.submit}
           emptyState={
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
               <p className="max-w-56 text-[13px] leading-relaxed text-muted">

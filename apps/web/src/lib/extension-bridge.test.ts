@@ -2,6 +2,8 @@ import { CommandResultSchema, PROTOCOL_VERSION } from '@dopilot/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchExtensionState,
+  findExtensionId,
+  getExtensionIds,
   sendBrowserCommand,
   startAgentTask,
   stopAgentTask,
@@ -153,5 +155,61 @@ describe('agent tasks', () => {
       'requestId',
       'type',
     ]);
+  });
+});
+
+describe('finding the extension', () => {
+  const store = 'a'.repeat(32);
+  const dev = 'doennedjpkdlajeeplfioihckoffjeld';
+
+  it('uses only the configured IDs in production, never the development one', () => {
+    expect(getExtensionIds(store, 'production')).toEqual([store]);
+    expect(getExtensionIds(undefined, 'production')).toEqual([]);
+  });
+
+  it('adds the development ID for local work, so existing installs keep working', () => {
+    expect(getExtensionIds(store, 'development')).toEqual([store, dev]);
+    expect(getExtensionIds(undefined, 'development')).toEqual([dev]);
+  });
+
+  it('ignores anything that is not an extension ID', () => {
+    expect(getExtensionIds('https://evil.example,xyz', 'production')).toEqual([]);
+  });
+
+  it('settles on whichever is installed', async () => {
+    stubRuntime(async (id, message) => {
+      if (id !== dev) throw new Error('Could not establish connection');
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId,
+        type: 'external.pong',
+        extensionVersion: '1.0.0',
+      };
+    });
+    expect(await findExtensionId([store, dev])).toBe(dev);
+  });
+
+  it('reports none when none answers', async () => {
+    stubRuntime(async () => {
+      throw new Error('Could not establish connection');
+    });
+    expect(await findExtensionId([store])).toBeNull();
+  });
+});
+
+describe('stopping', () => {
+  it('tries again if the first stop gets no answer', async () => {
+    let calls = 0;
+    const spy = stubRuntime(async (_id, message) => {
+      calls += 1;
+      if (calls === 1) throw new Error('Worker waking up');
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId,
+        type: 'external.ack',
+      };
+    });
+    expect(await stopAgentTask('x')).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 });

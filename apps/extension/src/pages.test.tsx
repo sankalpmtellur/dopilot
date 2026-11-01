@@ -37,7 +37,7 @@ const state: ExtensionState = {
   currentTabId: 7,
   groq,
   agent: null,
-  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto' },
+  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true },
   recentActions: [],
 };
 

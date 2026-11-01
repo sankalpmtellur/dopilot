@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { transcribeAudio } from './speech-service';
 
 let local: Map<string, unknown>;
+/** Long enough to count as a real recording. */
+const AUDIO = 'A'.repeat(4000);
 
 beforeEach(() => {
   local = new Map<string, unknown>([
@@ -22,7 +24,7 @@ const reply = (status: number, body: unknown, headers: Record<string, string> = 
 describe('speech-to-text fallback', () => {
   it('sends the recording to Groq and returns the text', async () => {
     const fetchStub = reply(200, { text: ' Open YouTube. ' });
-    expect(await transcribeAudio('AAAA', 'audio/webm', fetchStub)).toEqual({
+    expect(await transcribeAudio(AUDIO, 'audio/webm', fetchStub)).toEqual({
       text: 'Open YouTube.',
       error: null,
     });
@@ -36,19 +38,19 @@ describe('speech-to-text fallback', () => {
   it('refuses to send audio unless the user agreed', async () => {
     local.set('preferences', { vision: true, speechFallback: false, voiceEngine: 'auto' });
     const fetchStub = reply(200, { text: 'x' });
-    const result = await transcribeAudio('AAAA', 'audio/webm', fetchStub);
+    const result = await transcribeAudio(AUDIO, 'audio/webm', fetchStub);
     expect(result.error).toMatch(/turned off/);
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
   it('needs a key', async () => {
     local.delete('groqApiKey');
-    expect((await transcribeAudio('AAAA', 'audio/webm')).error).toMatch(/API key/);
+    expect((await transcribeAudio(AUDIO, 'audio/webm')).error).toMatch(/API key/);
   });
 
   it('explains free-tier limits', async () => {
     const result = await transcribeAudio(
-      'AAAA',
+      AUDIO,
       'audio/webm',
       reply(429, { error: {} }, { 'retry-after': '30' }),
     );
@@ -67,7 +69,7 @@ describe('speech-to-text fallback', () => {
         ? Response.json({ error: { code: 'model_not_found' } }, { status: 404 })
         : Response.json({ text: 'Hello' }),
     );
-    expect((await transcribeAudio('AAAA', 'audio/webm', fetchStub)).text).toBe('Hello');
+    expect((await transcribeAudio(AUDIO, 'audio/webm', fetchStub)).text).toBe('Hello');
     const models = fetchStub.mock.calls
       .map((call) => call[1]?.body)
       .filter((body) => body instanceof FormData)
@@ -76,7 +78,7 @@ describe('speech-to-text fallback', () => {
   });
 
   it('reports when nothing was recognized, and bad recordings', async () => {
-    expect((await transcribeAudio('AAAA', 'audio/webm', reply(200, { text: '  ' }))).error).toMatch(
+    expect((await transcribeAudio(AUDIO, 'audio/webm', reply(200, { text: '  ' }))).error).toMatch(
       /No speech/,
     );
     expect((await transcribeAudio('%%%', 'audio/webm', reply(200, { text: 'x' }))).error).toMatch(
