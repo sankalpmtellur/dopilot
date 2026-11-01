@@ -70,11 +70,12 @@ profile, can read it. Users should use a key they can revoke.
 an explicit click, never retries, and maps errors to fixed states, so API error text
 is discarded.
 
-**Permissions.** The manifest requests `sidePanel`, `storage` and Groq host access. Tab
-commands need nothing more. Tab titles and addresses need the optional `tabs` permission,
-which is only requested from a click in extension settings. Query strings and fragments
-are removed before tab information leaves the worker, including from titles. Add
-`scripting` and per-site host access when page interaction is built.
+**Permissions.** The manifest requests `activeTab`, `scripting`, `sidePanel`, `storage` and
+Groq host access. It grants no site access. The agent asks for each site, by exact origin, the
+first time a task needs it, and for the optional `tabs` permission when it needs tab titles.
+Both are requested from a click in extension-owned UI, and sites can be removed in settings.
+Query strings and fragments are removed before tab information leaves the worker, including
+from titles.
 
 **Blocked pages.** Navigation accepts only `http` and `https`, without embedded credentials.
 Commands refuse tabs showing internal browser or extension pages. Browsers hide tab
@@ -84,27 +85,67 @@ addresses until `tabs` is allowed, so before that this tab check cannot apply.
 the side panel, or a popup window for website requests. The website can neither answer the
 popup nor claim to have confirmed, since its schema has no such field.
 
-**AI-generated actions.** Model output is untrusted. Each call must pass
-`validateToolCall`, which uses strict schemas and a closed tool list. Tools marked
-`sensitive` require user confirmation, enforced by code rather than by the prompt.
+**AI-generated actions.** Model output is untrusted. Each call must pass `validateToolCall`,
+which uses strict schemas and a closed tool list, so no code or CSS selectors can be sent. Page
+elements are reached only through references the content script issued itself, tied to one
+loaded document, and rechecked before each use.
 
-**Prompt injection.** Webpages can contain text written to manipulate the model.
-`wrapUntrustedContent` marks page text as data, but delimiters cannot fully prevent
-injection. The real limits are the closed tool list, per-site permissions and
-confirmations, which must stay outside the model's control.
+**Approvals.** `assessToolCall` decides what needs approval, from facts the content script
+collects from the live page, never from anything the model reports. It covers purchases, sending
+messages, account changes, deletions, uploads and form submissions, except searches. Keys that
+activate a control, and links that lead to the same places, get the same rules as clicks. The
+check runs again after approval, so a page that changed needs fresh approval, and one approval
+covers one action. Answers are accepted only from extension pages.
 
-**Runaway runs.** `ExecutionGuard` enforces step, time and repeated-call limits and
-honours an `AbortSignal`, which is what the stop control will trigger.
+**Always refused.** Typing into password, card or code fields, solving CAPTCHAs, submitting graded
+quizzes or assessments, and using internal browser pages. Reading a quiz question is allowed.
+
+**Prompt injection.** Webpages can contain text written to manipulate the model. Page-sourced
+results are wrapped as untrusted data, and the system prompt says only the user gives instructions,
+but that cannot fully prevent injection. The real limits are the closed tool list, per-site
+permissions and approvals, all enforced by code the model cannot influence, so a fully fooled model
+still cannot act without the user. Unusually long addresses need approval, since they could carry
+page data to another site. Field values are never read, and card numbers and tokens are removed from
+page text before it reaches the model.
+
+**Runaway runs.** Each task is limited to 15 actions, 5 minutes, 3 failures in a row and 30 AI
+requests. Repeated calls are refused, and the Stop button aborts immediately.
 
 **Logs.** The backend redacts credential headers and `apiKey` fields. It has no
 Groq key setting.
 
+## Agent loop
+
+`AgentRunner` in `packages/agent-core` is a state machine: observe, ask the model, validate, check
+safety, execute, repeat. It knows nothing about browsers or Groq, which sit behind `AgentToolbox` and
+`ModelClient`.
+
+Manifest V3 can stop a service worker at any time, so every step is saved to `chrome.storage.session`
+before it starts. When a worker starts, it picks up any active run. A tool call that was in flight
+is not repeated, because it may already have happened: the model is told the outcome is unknown and
+looks again. While waiting for approval nothing runs at all, and the answer re-enters the loop.
+
+Exact commands such as `new tab` run directly without AI, to save quota. Anything else goes to the
+agent. Requests stay small: older page observations shrink to stubs, conversation history is bounded,
+and tool definitions leave out limits that are enforced anyway.
+
+Groq's model list does not say which models support tools, so `rankToolModels` goes by name, and a
+model that turns out to be unavailable or unable to use tools is skipped at run time.
+
 ## MCP
 
-`packages/mcp-tools` registers the tool catalog on an official MCP v2 `McpServer`.
-Execution sits behind `BrowserToolExecutor`. The backend creates a server but
-exposes no transport yet, because reaching the browser needs a secure bridge to the
-extension. That bridge must apply the same permissions and confirmations as the agent.
+`packages/mcp-tools` registers the same tool catalog on an official MCP v2 `McpServer`, with execution
+behind `BrowserToolExecutor`. There is one implementation of each tool, in the extension.
+
+```text
+MCP client ──stdio──▶ apps/backend/src/mcp/stdio.ts ◀──long poll── Extension service worker
+                      127.0.0.1:4319, token required                 same checks as the agent
+```
+
+The extension stays installable without Node.js: it only connects outward, and only after a person
+pastes the server's token in settings. The token lasts for the browser session. The bridge binds to
+loopback, requires the token and checks the Host header against DNS rebinding. MCP has no way to show a
+prompt, so anything needing approval or an ungranted site is refused.
 
 ## Voice
 

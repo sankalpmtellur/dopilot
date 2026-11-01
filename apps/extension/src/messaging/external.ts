@@ -25,6 +25,9 @@ export interface ExternalDeps {
   execute(command: BrowserCommand, requestId: string, senderTabId?: number): Promise<CommandResult>;
   cancel(targetRequestId: string): void;
   openSettings(): Promise<void>;
+  startAgent(instruction: string, senderTabId?: number): Promise<string | null>;
+  stopAgent(): Promise<void>;
+  resetAgent(): Promise<void>;
   rateLimiter?: RateLimiter;
 }
 
@@ -76,6 +79,31 @@ export function createExternalHandler(deps: ExternalDeps) {
 
       case 'external.open_settings':
         await deps.openSettings();
+        return { ...base, requestId, type: 'external.ack' };
+
+      case 'external.agent_start': {
+        if (!rateLimiter.tryAcquire()) {
+          return {
+            ...base,
+            requestId,
+            type: 'external.agent_started',
+            error: 'Too many requests. Wait a moment.',
+          };
+        }
+        return {
+          ...base,
+          requestId,
+          type: 'external.agent_started',
+          error: await deps.startAgent(request.instruction, sender.tabId),
+        };
+      }
+
+      case 'external.agent_stop':
+        await deps.stopAgent();
+        return { ...base, requestId, type: 'external.ack' };
+
+      case 'external.agent_reset':
+        await deps.resetAgent();
         return { ...base, requestId, type: 'external.ack' };
 
       case 'external.command': {

@@ -24,6 +24,7 @@ describe('testGroqKey', () => {
 
     expect(outcome.connection).toEqual({ state: 'connected', checkedAt: 1000 });
     expect(outcome.models).toEqual([{ id: 'text-a' }, { id: 'text-b' }]);
+    expect(outcome.models?.some((model) => model.id === 'retired-model')).toBe(false);
 
     const [url, init] = fetchStub.mock.calls[0] ?? [];
     expect(String(url)).toContain('/models');

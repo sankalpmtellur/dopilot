@@ -32,7 +32,7 @@ const state: ExtensionState = {
   ],
   currentTabId: 7,
   groq,
-  agentStatus: 'idle',
+  agent: null,
   recentActions: [],
 };
 
@@ -75,6 +75,10 @@ beforeEach(() => {
       onRemoved: event(),
       contains: vi.fn(async () => false),
       request: vi.fn(async () => true),
+      getAll: vi.fn(async () => ({
+        origins: ['https://api.groq.com/*', 'https://en.wikipedia.org/*'],
+      })),
+      remove: vi.fn(async () => true),
     },
   });
 });
@@ -132,6 +136,105 @@ describe('side panel', () => {
     render(<App />);
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(await screen.findByText('Groq API key')).toBeTruthy();
+  });
+});
+
+describe('side panel agent', () => {
+  const run: NonNullable<ExtensionState['agent']> = {
+    id: 'run-1',
+    instruction: 'Delete my draft',
+    source: 'panel',
+    status: 'waiting_for_approval',
+    notice: null,
+    model: 'model-a',
+    startedAt: 0,
+    finishedAt: null,
+    actionCount: 1,
+    maxActions: 15,
+    timeline: [],
+    approval: { id: 'a1', kind: 'action', title: 'Click “Delete”?', detail: 'Deletes it.' },
+    summary: null,
+    error: null,
+  };
+
+  function withRun(agent: ExtensionState['agent']) {
+    handler = (message) =>
+      message.type === 'panel.get_state'
+        ? { protocolVersion: PROTOCOL_VERSION, type: 'panel.state', state: { ...state, agent } }
+        : { protocolVersion: PROTOCOL_VERSION, type: 'panel.ack' };
+  }
+
+  it('sends natural language to the agent', async () => {
+    handler = (message) =>
+      message.type === 'panel.start_agent'
+        ? { protocolVersion: PROTOCOL_VERSION, type: 'panel.agent_started', error: null }
+        : { protocolVersion: PROTOCOL_VERSION, type: 'panel.state', state };
+    render(<App />);
+    await userEvent.type(screen.getByRole('textbox', { name: 'Command' }), 'Open YouTube.{Enter}');
+    await waitFor(() =>
+      expect(sent).toContainEqual({
+        protocolVersion: PROTOCOL_VERSION,
+        type: 'panel.start_agent',
+        instruction: 'Open YouTube.',
+      }),
+    );
+  });
+
+  it('answers approvals from the panel', async () => {
+    withRun(run);
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Allow' }));
+    await waitFor(() =>
+      expect(sent).toContainEqual({
+        protocolVersion: PROTOCOL_VERSION,
+        type: 'panel.resolve_approval',
+        id: 'a1',
+        approved: true,
+      }),
+    );
+  });
+
+  it('asks the browser for exactly the requested site', async () => {
+    withRun({
+      ...run,
+      approval: {
+        id: 'a2',
+        kind: 'site_access',
+        title: 'Allow Dopilot on a.com?',
+        detail: 'Needed.',
+        origin: 'https://a.com',
+      },
+    });
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Allow' }));
+    expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ['https://a.com/*'] });
+  });
+
+  it('counts a refused browser permission as declining', async () => {
+    vi.mocked(chrome.permissions.request).mockResolvedValue(false as never);
+    withRun({
+      ...run,
+      approval: { id: 'a3', kind: 'tab_details', title: 'Tabs?', detail: 'Needed.' },
+    });
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Allow' }));
+    await waitFor(() =>
+      expect(sent).toContainEqual({
+        protocolVersion: PROTOCOL_VERSION,
+        type: 'panel.resolve_approval',
+        id: 'a3',
+        approved: false,
+      }),
+    );
+  });
+
+  it('has a prominent stop button during a task', async () => {
+    withRun({ ...run, status: 'executing', approval: null });
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop task' }));
+    await waitFor(() =>
+      expect(sent).toContainEqual({ protocolVersion: PROTOCOL_VERSION, type: 'panel.stop_agent' }),
+    );
   });
 });
 
@@ -194,6 +297,23 @@ describe('settings', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect((await screen.findByRole('alert')).textContent).toMatch(/does not look like/);
     expect(local.has('groqApiKey')).toBe(false);
+  });
+
+  it('lists authorized sites and lets you remove them, hiding Groq itself', async () => {
+    render(<SettingsForm />);
+    expect(await screen.findByText('https://en.wikipedia.org')).toBeTruthy();
+    expect(screen.queryByText('https://api.groq.com')).toBeNull();
+    const row = screen.getByText('https://en.wikipedia.org').closest('li') as HTMLElement;
+    await userEvent.click(row.querySelector('button') as HTMLElement);
+    expect(chrome.permissions.remove).toHaveBeenCalledWith({
+      origins: ['https://en.wikipedia.org/*'],
+    });
+  });
+
+  it('offers automatic model choice', async () => {
+    render(<SettingsForm />);
+    const select = (await screen.findByLabelText('Model')) as HTMLSelectElement;
+    expect(select.options[0]?.textContent).toMatch(/automatic/i);
   });
 
   it('asks for tab details only when clicked', async () => {

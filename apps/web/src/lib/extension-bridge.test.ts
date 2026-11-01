@@ -1,6 +1,11 @@
 import { CommandResultSchema, PROTOCOL_VERSION } from '@dopilot/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchExtensionState, sendBrowserCommand } from './extension-bridge';
+import {
+  fetchExtensionState,
+  sendBrowserCommand,
+  startAgentTask,
+  stopAgentTask,
+} from './extension-bridge';
 
 type Message = { requestId: string; type: string; targetRequestId?: string };
 
@@ -115,5 +120,38 @@ describe('sendBrowserCommand', () => {
 
     expect(await pending).toMatchObject({ ok: false, code: 'cancelled' });
     expect(spy.mock.calls.map((call) => call[1].type)).toContain('external.cancel');
+  });
+});
+
+describe('agent tasks', () => {
+  it('starts a task and reports why it could not', async () => {
+    stubRuntime(async (_id, message) => ({
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: message.requestId,
+      type: 'external.agent_started',
+      error: 'Add your key first.',
+    }));
+    expect(await startAgentTask('abc', 'open youtube')).toBe('Add your key first.');
+  });
+
+  it('does not claim a task started when the extension is gone', async () => {
+    expect(await startAgentTask('abc', 'open youtube')).toMatch(/isn’t connected/);
+    expect(await stopAgentTask('abc')).toBe(false);
+  });
+
+  it('sends only the instruction', async () => {
+    const spy = stubRuntime(async (_id, message) => ({
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: message.requestId,
+      type: 'external.agent_started',
+      error: null,
+    }));
+    await startAgentTask('abc', 'open youtube');
+    expect(Object.keys(spy.mock.calls[0]?.[1] ?? {}).sort()).toEqual([
+      'instruction',
+      'protocolVersion',
+      'requestId',
+      'type',
+    ]);
   });
 });

@@ -1,9 +1,6 @@
+import { isToolModelCandidate, rankToolModels } from '@dopilot/shared';
 import type { GroqConnection, GroqModel } from '@dopilot/shared';
 import Groq from 'groq-sdk';
-
-// Groq's list also includes speech and moderation models, which cannot run text
-// commands. There is no capability field, so this filters by name.
-const NON_TEXT_MODEL = /whisper|tts|orpheus|playai|guard|embed/i;
 
 export interface GroqTestOutcome {
   connection: GroqConnection;
@@ -50,11 +47,15 @@ export async function testGroqKey(
 
   try {
     const { data } = await groq.models.list();
-    const models = data
-      .filter((model) => (model as { active?: boolean }).active !== false)
-      .filter((model) => !NON_TEXT_MODEL.test(model.id))
-      .map((model) => ({ id: model.id }))
-      .sort((a, b) => a.id.localeCompare(b.id));
+    const models = rankToolModels(
+      data
+        .filter((model) => (model as { active?: boolean }).active !== false)
+        .filter((model) => isToolModelCandidate(model.id))
+        .map((model) => {
+          const contextWindow = (model as { context_window?: number }).context_window;
+          return { id: model.id, ...(contextWindow && { contextWindow }) };
+        }),
+    );
     return { connection: { state: 'connected', checkedAt: now }, models };
   } catch (error) {
     if (error instanceof Groq.AuthenticationError) return failed('invalid_key');

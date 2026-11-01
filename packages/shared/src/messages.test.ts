@@ -52,3 +52,21 @@ describe('PanelRequestSchema', () => {
     expect(PanelRequestSchema.safeParse(save).success).toBe(false);
   });
 });
+
+describe('agent messages', () => {
+  it('accepts an instruction and rejects empty or oversized ones', () => {
+    const start = { ...base, type: 'external.agent_start' };
+    expect(ExternalRequestSchema.safeParse({ ...start, instruction: 'open youtube' }).success).toBe(
+      true,
+    );
+    expect(ExternalRequestSchema.safeParse({ ...start, instruction: '   ' }).success).toBe(false);
+    expect(
+      ExternalRequestSchema.safeParse({ ...start, instruction: 'x'.repeat(2001) }).success,
+    ).toBe(false);
+  });
+
+  it('gives websites no way to answer an approval', () => {
+    const answer = { ...base, type: 'external.resolve_approval', id: 'a', approved: true };
+    expect(ExternalRequestSchema.safeParse(answer).success).toBe(false);
+  });
+});

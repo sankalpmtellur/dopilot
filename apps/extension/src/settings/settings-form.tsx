@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { loadGroqStatus, removeApiKey, saveApiKey, selectModel } from '@/lib/api-key-store';
 import { testGroqConnection } from '@/lib/panel-client';
+import { MCP_BRIDGE_ORIGIN } from '@/lib/mcp-bridge';
+import { configureMcp, getMcpStatus } from '@/lib/panel-client';
 import { hasTabDetails, removeTabDetails, requestTabDetails } from '@/permissions/tab-details';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -140,20 +142,17 @@ function GroqSection() {
 
       <div className="flex flex-col gap-2">
         <label htmlFor="groq-model" className="text-[13px]">
-          Text model
+          Model
         </label>
         <select
           id="groq-model"
           value={status.selectedModel ?? ''}
-          disabled={status.models.length === 0}
           onChange={(event) => {
             void selectModel(event.target.value || null).then(refresh);
           }}
           className="h-9 w-full rounded-lg border border-line bg-surface px-2 text-sm outline-none focus:border-faint disabled:opacity-50"
         >
-          <option value="">
-            {status.models.length === 0 ? 'Test the connection to load models' : 'Choose a model'}
-          </option>
+          <option value="">Automatic (recommended)</option>
           {status.models.map((model) => (
             <option key={model.id} value={model.id}>
               {model.id}
@@ -162,6 +161,129 @@ function GroqSection() {
         </select>
       </div>
     </Section>
+  );
+}
+
+const INTERNAL_HOSTS = ['https://api.groq.com/*', `${MCP_BRIDGE_ORIGIN}/*`];
+
+function SiteAccessSection() {
+  const [sites, setSites] = useState<string[] | null>(null);
+
+  const refresh = useCallback(async () => {
+    const { origins = [] } = await chrome.permissions.getAll();
+    setSites(origins.filter((origin) => !INTERNAL_HOSTS.includes(origin)));
+  }, []);
+
+  useEffect(() => {
+    void chrome.permissions.getAll().then(({ origins = [] }) => {
+      setSites(origins.filter((origin) => !INTERNAL_HOSTS.includes(origin)));
+    });
+  }, []);
+
+  if (!sites) return null;
+
+  return (
+    <Section title="Sites Dopilot can use">
+      {sites.length === 0 ? (
+        <p className="text-[13px] text-muted">
+          None yet. Dopilot asks the first time a task needs a site.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {sites.map((site) => (
+            <li key={site} className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-[13px]">{site.replace(/\/\*$/, '')}</span>
+              <Button
+                variant="ghost"
+                aria-label={`Remove access to ${site.replace(/\/\*$/, '')}`}
+                onClick={() => {
+                  void chrome.permissions.remove({ origins: [site] }).then(refresh);
+                }}
+              >
+                Remove
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function McpSection() {
+  const [status, setStatus] = useState<{ enabled: boolean; connected: boolean } | null>(null);
+  const [token, setToken] = useState('');
+
+  const refresh = useCallback(() => {
+    void getMcpStatus()
+      .then(setStatus)
+      .catch(() => setStatus({ enabled: false, connected: false }));
+  }, []);
+
+  useEffect(refresh, [refresh]);
+
+  async function connect() {
+    // Must be requested inside the click, and covers only the local bridge address.
+    const granted = await chrome.permissions.request({ origins: [`${MCP_BRIDGE_ORIGIN}/*`] });
+    if (!granted) return;
+    await configureMcp(token.trim());
+    setToken('');
+    refresh();
+  }
+
+  if (!status) return null;
+
+  return (
+    <details className="group border-b border-line pb-5 last:border-b-0">
+      <summary className="cursor-pointer list-none text-xs font-medium tracking-wide text-faint uppercase hover:text-ink [&::-webkit-details-marker]:hidden">
+        Developer: local MCP bridge
+      </summary>
+      <div className="mt-3 flex flex-col gap-2">
+        <p className="text-[13px] text-muted">
+          Lets a local MCP client use these browser tools, with the same permissions. Anything
+          needing approval is refused. Lasts until the browser closes.
+        </p>
+        {status.enabled ? (
+          <>
+            <p data-testid="mcp-status" className="text-[13px]">
+              {status.connected
+                ? 'Connected to the local server.'
+                : 'Waiting for the local server…'}
+            </p>
+            <div className="flex gap-2">
+              <Button onClick={refresh}>Refresh</Button>
+              <Button
+                onClick={() => {
+                  void configureMcp(null).then(refresh);
+                }}
+              >
+                Turn off
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <label htmlFor="mcp-token" className="text-[13px]">
+              Token printed by the server
+            </label>
+            <input
+              id="mcp-token"
+              type="password"
+              value={token}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setToken(event.target.value)}
+              className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-sm outline-none focus:border-faint"
+            />
+            <div>
+              <Button disabled={!token.trim()} onClick={() => void connect()}>
+                Connect
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -177,7 +299,7 @@ function TabDetailsSection() {
       <p className="text-[13px] leading-relaxed text-muted">
         {granted
           ? 'Dopilot can see the titles and addresses of your open tabs. Query strings are removed before they are shown.'
-          : 'Off. Tab commands still work, but tabs appear by number. Turning this on lets Dopilot see the titles and addresses of open tabs, and your browser will describe it as reading your browsing history.'}
+          : 'Off. Exact tab commands still work, but tabs appear by number. The agent will ask for this when it needs it, for example to find your GitHub tab. Your browser will describe it as reading your browsing history.'}
       </p>
       {granted !== null && (
         <div>
@@ -200,12 +322,14 @@ export function SettingsForm() {
   return (
     <div className="flex flex-col gap-5">
       <GroqSection />
+      <SiteAccessSection />
       <TabDetailsSection />
       <Section title="Appearance">
         <div>
           <ThemeSwitch />
         </div>
       </Section>
+      <McpSection />
     </div>
   );
 }

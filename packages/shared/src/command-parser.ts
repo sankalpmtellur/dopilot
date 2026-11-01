@@ -56,9 +56,12 @@ export function parseCommand(input: string): ParsedInput {
   const opened = /^(?:open|go to|goto)\s+(\S+)$/i.exec(text);
   if (opened?.[1]) {
     const validation = validateNavigationUrl(opened[1]);
-    return validation.ok
-      ? { kind: 'command', command: { action: 'tab.open_url', url: validation.url } }
-      : { kind: 'invalid', message: validation.reason };
+    if (validation.ok) {
+      return { kind: 'command', command: { action: 'tab.open_url', url: validation.url } };
+    }
+    // "open youtube" is a request for the agent. "open chrome://settings" is refused outright.
+    const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(opened[1]);
+    return hasScheme ? { kind: 'invalid', message: validation.reason } : { kind: 'unknown' };
   }
 
   const switched = /^(?:switch to|go to)(?: tab)? (\d+)$/.exec(normalized);

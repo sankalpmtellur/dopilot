@@ -1,6 +1,8 @@
+import { isAgentActive } from '@dopilot/shared';
 import type { TabInfo } from '@dopilot/shared';
 import {
   ActionList,
+  AgentPanel,
   Brand,
   CommandComposer,
   ConfirmBar,
@@ -15,9 +17,15 @@ import {
 } from '@dopilot/ui';
 import type { ConsoleMessage } from '@dopilot/ui';
 import { ArrowLeft, ChevronRight, Plus, Settings } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { executeCommand, stopAgent } from '@/lib/panel-client';
+import {
+  answerApproval,
+  executeCommand,
+  resetConversation,
+  startAgent,
+  stopAgent,
+} from '@/lib/panel-client';
 import { SettingsForm } from '@/settings/settings-form';
 import { CONVERSATION_STORAGE_KEY, usePanelState } from './use-panel-state';
 
@@ -55,7 +63,22 @@ export function App() {
     load: loadConversation,
     save: saveConversation,
     onSettled: () => void refresh(),
+    startTask: async (instruction) => {
+      const problem = await startAgent(instruction);
+      void refresh();
+      return problem;
+    },
+    onClear: () => void resetConversation(),
   });
+
+  const run = state?.agent ?? null;
+  const taskRunning = run !== null && isAgentActive(run.status);
+  const { reportRun } = console_;
+  useEffect(() => reportRun(run), [reportRun, run]);
+  const stopTask = () => {
+    console_.stop();
+    void stopAgent().then(refresh);
+  };
 
   if (showSettings) {
     return (
@@ -126,10 +149,10 @@ export function App() {
           emptyState={
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
               <p className="max-w-56 text-[13px] leading-relaxed text-muted">
-                Type a browser command below. Nothing has been run yet.
+                Tell Dopilot what to do, in your own words. Nothing has been run yet.
               </p>
               <div className="flex flex-wrap justify-center gap-1.5">
-                {['new tab', 'list tabs', 'help'].map((example) => (
+                {['Open a new tab', 'list tabs', 'help'].map((example) => (
                   <button
                     key={example}
                     type="button"
@@ -164,6 +187,15 @@ export function App() {
       </div>
 
       <div className="flex shrink-0 flex-col gap-2 border-t border-line p-2">
+        {run && taskRunning && (
+          <AgentPanel
+            run={run}
+            onStop={stopTask}
+            onAnswerApproval={(approval, approved) => {
+              void answerApproval(approval, approved).then(refresh);
+            }}
+          />
+        )}
         {console_.confirmation && (
           <ConfirmBar
             confirmation={console_.confirmation}
@@ -173,11 +205,8 @@ export function App() {
         )}
         <CommandComposer
           onSubmit={console_.submit}
-          canStop={console_.busy}
-          onStop={() => {
-            console_.stop();
-            void stopAgent();
-          }}
+          canStop={console_.busy || taskRunning}
+          onStop={stopTask}
         />
       </div>
     </div>

@@ -23,6 +23,8 @@ function fakeApi(tabs: Tab[]) {
       query.active ? tabs.filter((item) => item.active) : tabs,
     ),
     createTab: vi.fn(async () => tab(99)),
+    getTab: vi.fn(async (id: number) => tab(id)),
+    navigateTab: vi.fn(async () => undefined),
     activateTab: vi.fn(async () => undefined),
     focusWindow: vi.fn(async () => undefined),
     reload: vi.fn(async () => undefined),

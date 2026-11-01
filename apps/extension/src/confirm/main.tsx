@@ -1,12 +1,60 @@
 import { applyTheme, Brand, Button } from '@dopilot/ui';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { decideConfirmation, getConfirmationPrompt } from '@/lib/panel-client';
+import type { AgentApproval } from '@dopilot/shared';
+import {
+  answerApproval,
+  decideConfirmation,
+  getApproval,
+  getConfirmationPrompt,
+} from '@/lib/panel-client';
 import '@/styles/app.css';
 
 applyTheme();
 
-const id = new URLSearchParams(location.search).get('id') ?? '';
+const params = new URLSearchParams(location.search);
+const id = params.get('id') ?? '';
+const approvalId = params.get('approval');
+
+/** Approvals for agent tasks, when the side panel is closed. */
+function ApprovalPage({ approvalId }: { approvalId: string }) {
+  const [approval, setApproval] = useState<AgentApproval | null | undefined>(undefined);
+
+  useEffect(() => {
+    getApproval(approvalId)
+      .then(setApproval)
+      .catch(() => setApproval(null));
+  }, [approvalId]);
+
+  if (approval === undefined) return null;
+  if (approval === null) {
+    return (
+      <>
+        <p className="text-sm text-muted">This request has expired.</p>
+        <div>
+          <Button onClick={() => window.close()}>Close</Button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div>
+        <p data-testid="confirm-prompt" className="text-[15px] font-medium break-words">
+          {approval.title}
+        </p>
+        <p className="mt-1 text-[13px] text-muted">{approval.detail}</p>
+      </div>
+      <div className="flex gap-2">
+        <Button onClick={() => void answerApproval(approval, false)}>Decline</Button>
+        <Button variant="primary" onClick={() => void answerApproval(approval, true)}>
+          Allow
+        </Button>
+      </div>
+    </>
+  );
+}
 
 function ConfirmPage() {
   const [prompt, setPrompt] = useState<string | null | undefined>(undefined);
@@ -55,7 +103,7 @@ createRoot(root).render(
   <StrictMode>
     <main className="flex min-h-screen flex-col justify-center gap-4 p-5">
       <Brand compact />
-      <ConfirmPage />
+      {approvalId ? <ApprovalPage approvalId={approvalId} /> : <ConfirmPage />}
     </main>
   </StrictMode>,
 );

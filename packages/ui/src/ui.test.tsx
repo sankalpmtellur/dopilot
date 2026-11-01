@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
-import type { CommandResult } from '@dopilot/shared';
+import type { AgentRunView, CommandResult } from '@dopilot/shared';
+import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActionList } from './activity.js';
+import { AgentPanel } from './agent-run.js';
 import { CommandComposer } from './composer.js';
 import { ConfirmBar, ConversationView } from './conversation.js';
 import { TabList } from './tabs.js';
@@ -12,8 +14,18 @@ import type { ExecuteCommand } from './use-command-console.js';
 
 afterEach(cleanup);
 
-function Harness({ execute }: { execute: ExecuteCommand }) {
-  const consoleState = useCommandConsole({ execute });
+function Harness({
+  execute,
+  startTask,
+  run,
+}: {
+  execute: ExecuteCommand;
+  startTask?: (instruction: string) => Promise<string | null>;
+  run?: AgentRunView;
+}) {
+  const consoleState = useCommandConsole({ execute, ...(startTask && { startTask }) });
+  const { reportRun } = consoleState;
+  useEffect(() => reportRun(run), [reportRun, run]);
   return (
     <div>
       <ConversationView messages={consoleState.messages} emptyState={<p>Nothing yet</p>} />
@@ -168,5 +180,135 @@ describe('lists', () => {
   it('has an accurate empty state', () => {
     render(<ActionList actions={[]} />);
     expect(screen.getByText('No browser actions yet.')).toBeTruthy();
+  });
+});
+
+const baseRun: AgentRunView = {
+  id: 'run-1',
+  instruction: 'Open Wikipedia and search for AI',
+  source: 'panel',
+  status: 'executing',
+  notice: null,
+  model: 'model-a',
+  startedAt: 0,
+  finishedAt: null,
+  actionCount: 2,
+  maxActions: 15,
+  timeline: [
+    {
+      id: '1',
+      at: 0,
+      kind: 'act',
+      status: 'done',
+      label: 'Opening https://wikipedia.org',
+      detail: 'Opened.',
+    },
+    { id: '2', at: 0, kind: 'act', status: 'running', label: 'Typing' },
+  ],
+  approval: null,
+  summary: null,
+  error: null,
+};
+
+describe('handing tasks to the agent', () => {
+  it('sends natural language to the agent, but exact commands stay local', async () => {
+    const execute = vi.fn<ExecuteCommand>(async () => ({ ok: true, message: 'Opened a new tab.' }));
+    const startTask = vi.fn(async () => null);
+    render(<Harness execute={execute} startTask={startTask} />);
+
+    await type('new tab');
+    expect(startTask).not.toHaveBeenCalled();
+    await type('Open YouTube.');
+    expect(startTask).toHaveBeenCalledWith('Open YouTube.');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends unsafe addresses to the agent', async () => {
+    const startTask = vi.fn(async () => null);
+    render(<Harness execute={vi.fn()} startTask={startTask} />);
+    await type('open chrome://settings');
+    expect(startTask).not.toHaveBeenCalled();
+  });
+
+  it('shows why a task could not start', async () => {
+    render(<Harness execute={vi.fn()} startTask={async () => 'Add your Groq API key first.'} />);
+    await type('find me a flight');
+    expect(await screen.findByText('Add your Groq API key first.')).toBeTruthy();
+  });
+
+  it('adds a finished task once, with its steps', async () => {
+    const run = { ...baseRun, status: 'completed' as const, summary: 'All done.' };
+    const { rerender } = render(<Harness execute={vi.fn()} run={run} />);
+    rerender(<Harness execute={vi.fn()} run={{ ...run }} />);
+    expect(screen.getAllByText('All done.')).toHaveLength(1);
+    expect(screen.getByText('2 steps')).toBeTruthy();
+  });
+
+  it('shows a failure as a failure, not a success', () => {
+    const run = { ...baseRun, status: 'failed' as const, error: 'Reached the limit.' };
+    render(<Harness execute={vi.fn()} run={run} />);
+    expect(screen.getByText('Reached the limit.').className).toContain('text-danger');
+  });
+});
+
+describe('AgentPanel', () => {
+  it.each([
+    ['thinking', 'Thinking'],
+    ['observing', 'Observing'],
+    ['executing', 'Executing'],
+    ['waiting_for_approval', 'Waiting for approval'],
+  ] as const)('shows the %s status with a Stop button', (status, label) => {
+    render(<AgentPanel run={{ ...baseRun, status }} onStop={vi.fn()} />);
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop task' })).toBeTruthy();
+  });
+
+  it('shows the task, its timeline and progress', () => {
+    render(<AgentPanel run={baseRun} onStop={vi.fn()} />);
+    expect(screen.getByText('Open Wikipedia and search for AI')).toBeTruthy();
+    expect(screen.getByText('Opening https://wikipedia.org')).toBeTruthy();
+    expect(screen.getByText('Opened.')).toBeTruthy();
+    expect(screen.getByText('2 of 15 actions')).toBeTruthy();
+  });
+
+  it('stops when asked', async () => {
+    const onStop = vi.fn();
+    render(<AgentPanel run={baseRun} onStop={onStop} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Stop task' }));
+    expect(onStop).toHaveBeenCalled();
+  });
+
+  it('shows retry notices', () => {
+    render(
+      <AgentPanel
+        run={{ ...baseRun, notice: 'Rate limited by Groq. Retrying in 7s.' }}
+        onStop={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Rate limited by Groq. Retrying in 7s.')).toBeTruthy();
+  });
+
+  const approval = {
+    id: 'a1',
+    kind: 'action' as const,
+    title: 'Click “Delete”?',
+    detail: 'This deletes something.',
+  };
+  const waiting = { ...baseRun, status: 'waiting_for_approval' as const, approval };
+
+  it('lets extension pages answer an approval', async () => {
+    const onAnswer = vi.fn();
+    render(<AgentPanel run={waiting} onStop={vi.fn()} onAnswerApproval={onAnswer} />);
+    expect(screen.getByRole('alertdialog').textContent).toContain('Click “Delete”?');
+    await userEvent.click(screen.getByRole('button', { name: 'Decline' }));
+    expect(onAnswer).toHaveBeenCalledWith(approval, false);
+    await userEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(onAnswer).toHaveBeenCalledWith(approval, true);
+  });
+
+  it('gives the website no way to answer, only a pointer to where to do it', () => {
+    render(<AgentPanel run={waiting} onStop={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+    expect(screen.getByRole('alertdialog').textContent).toMatch(/Dopilot side panel or window/);
   });
 });

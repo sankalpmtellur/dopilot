@@ -1,4 +1,4 @@
-import { AgentRunStatusSchema } from './agent.js';
+import { AgentApprovalSchema, AgentInstructionSchema, AgentRunViewSchema } from './agent.js';
 import {
   ActionLogEntrySchema,
   BrowserCommandSchema,
@@ -20,7 +20,7 @@ export const ExtensionStateSchema = z.strictObject({
   /** For the website, this is the tab last used before the website itself. */
   currentTabId: z.number().int().nonnegative().nullable(),
   groq: GroqStatusSchema,
-  agentStatus: AgentRunStatusSchema,
+  agent: AgentRunViewSchema.nullable(),
   recentActions: z.array(ActionLogEntrySchema),
 });
 export type ExtensionState = z.infer<typeof ExtensionStateSchema>;
@@ -43,6 +43,13 @@ export const ExternalRequestSchema = z.discriminatedUnion('type', [
     targetRequestId: z.uuid(),
   }),
   z.strictObject({ ...request, type: z.literal('external.open_settings') }),
+  z.strictObject({
+    ...request,
+    type: z.literal('external.agent_start'),
+    instruction: AgentInstructionSchema,
+  }),
+  z.strictObject({ ...request, type: z.literal('external.agent_stop') }),
+  z.strictObject({ ...request, type: z.literal('external.agent_reset') }),
 ]);
 export type ExternalRequest = z.infer<typeof ExternalRequestSchema>;
 
@@ -63,22 +70,16 @@ export const ExternalResponseSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...response, type: z.literal('external.ack') }),
   z.strictObject({
     ...response,
+    type: z.literal('external.agent_started'),
+    error: z.string().nullable(),
+  }),
+  z.strictObject({
+    ...response,
     type: z.literal('external.rejected'),
     reason: z.enum(['origin_not_allowed', 'invalid_message']),
   }),
 ]);
 export type ExternalResponse = z.infer<typeof ExternalResponseSchema>;
-
-/** Messages between the service worker and content scripts. */
-export const ContentRequestSchema = z.discriminatedUnion('type', [
-  z.strictObject({ ...envelope, type: z.literal('content.ping') }),
-]);
-export type ContentRequest = z.infer<typeof ContentRequestSchema>;
-
-export const ContentResponseSchema = z.discriminatedUnion('type', [
-  z.strictObject({ ...envelope, type: z.literal('content.pong'), url: z.string() }),
-]);
-export type ContentResponse = z.infer<typeof ContentResponseSchema>;
 
 /**
  * Messages from the extension's own pages to the service worker. Saving a key is
@@ -92,7 +93,26 @@ export const PanelRequestSchema = z.discriminatedUnion('type', [
     command: BrowserCommandSchema,
     confirmed: z.boolean(),
   }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.start_agent'),
+    instruction: AgentInstructionSchema,
+  }),
   z.strictObject({ ...envelope, type: z.literal('panel.stop_agent') }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.resolve_approval'),
+    id: z.string().min(1),
+    approved: z.boolean(),
+  }),
+  z.strictObject({ ...envelope, type: z.literal('panel.get_approval'), id: z.string().min(1) }),
+  z.strictObject({ ...envelope, type: z.literal('panel.reset_conversation') }),
+  z.strictObject({ ...envelope, type: z.literal('panel.mcp_status') }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.mcp_configure'),
+    token: z.string().min(1).max(200).nullable(),
+  }),
   z.strictObject({ ...envelope, type: z.literal('panel.test_groq') }),
   z.strictObject({ ...envelope, type: z.literal('panel.get_confirmation'), id: z.uuid() }),
   z.strictObject({
@@ -118,5 +138,21 @@ export const PanelResponseSchema = z.discriminatedUnion('type', [
     prompt: z.string().nullable(),
   }),
   z.strictObject({ ...envelope, type: z.literal('panel.ack') }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.agent_started'),
+    error: z.string().nullable(),
+  }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.approval'),
+    approval: AgentApprovalSchema.nullable(),
+  }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal('panel.mcp_status'),
+    enabled: z.boolean(),
+    connected: z.boolean(),
+  }),
 ]);
 export type PanelResponse = z.infer<typeof PanelResponseSchema>;

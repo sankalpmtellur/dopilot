@@ -1,9 +1,11 @@
 'use client';
 
-import { describeCommand } from '@dopilot/shared';
+import { agentStatusLabel, describeCommand, isAgentActive } from '@dopilot/shared';
 import type { TabInfo } from '@dopilot/shared';
 import {
   ActionList,
+  AgentPanel,
+  AgentTimeline,
   Brand,
   CommandComposer,
   ConversationView,
@@ -16,14 +18,20 @@ import {
   useCommandConsole,
 } from '@dopilot/ui';
 import { Activity, Globe, MessageSquare, Plus, Settings } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Onboarding } from '@/components/onboarding';
 import { SettingsDrawer } from '@/components/settings-drawer';
 import { useExtension } from '@/hooks/use-extension';
 import { useStoredFlag } from '@/hooks/use-stored-flag';
 import { loadConversation, saveConversation } from '@/lib/conversation-store';
-import { openExtensionSettings, sendBrowserCommand } from '@/lib/extension-bridge';
+import {
+  openExtensionSettings,
+  resetAgent,
+  sendBrowserCommand,
+  startAgentTask,
+  stopAgentTask,
+} from '@/lib/extension-bridge';
 
 type Section = 'chat' | 'browser' | 'activity';
 
@@ -66,12 +74,26 @@ export function ConsoleApp() {
     load: loadConversation,
     save: saveConversation,
     onSettled: () => void refresh(),
+    startTask: async (instruction) => {
+      const problem = await startAgentTask(extensionId, instruction);
+      void refresh();
+      return problem;
+    },
+    onClear: () => void resetAgent(extensionId),
   });
 
   const state = connection.status === 'connected' ? connection.state : null;
   const connected = state !== null;
   const currentTab = state?.tabs.find((tab) => tab.id === state.currentTabId);
-  const hasRunCommand = (state?.recentActions.length ?? 0) > 0;
+  const run = state?.agent ?? null;
+  const taskRunning = run !== null && isAgentActive(run.status);
+  const { reportRun } = console_;
+  useEffect(() => reportRun(run), [reportRun, run]);
+  const stopTask = () => {
+    console_.stop();
+    void stopAgentTask(extensionId).then(() => refresh());
+  };
+  const hasRunCommand = (state?.recentActions.length ?? 0) > 0 || run !== null;
   const setupComplete = state?.groq.connection.state === 'connected' && hasRunCommand;
   const showGuide = guideRequested || (!guideDismissed && !setupComplete);
   const dismissGuide = () => {
@@ -154,7 +176,7 @@ export function ConsoleApp() {
                 emptyState={
                   !showGuide ? (
                     <p className="py-8 text-center text-sm text-muted">
-                      No commands yet. Type “help” to see what Dopilot can do.
+                      Nothing yet. Tell Dopilot what to do, or type “help” for exact commands.
                     </p>
                   ) : null
                 }
@@ -167,12 +189,17 @@ export function ConsoleApp() {
                 Confirm or decline in the Dopilot window that just opened.
               </p>
             )}
+            {run && taskRunning && (
+              <div className="mb-2">
+                <AgentPanel run={run} onStop={stopTask} />
+              </div>
+            )}
             <CommandComposer
               value={draft}
               onValueChange={setDraft}
               onSubmit={console_.submit}
-              onStop={console_.stop}
-              canStop={console_.busy}
+              onStop={stopTask}
+              canStop={console_.busy || taskRunning}
             />
           </div>
         </div>
@@ -245,9 +272,19 @@ export function ConsoleApp() {
 
           <div className={`flex-col gap-3 ${visibleOn('activity')}`}>
             <Panel title="Agent">
-              <p className="text-[13px] text-muted">
-                No agent is running. Dopilot only runs the exact commands you type for now.
-              </p>
+              {run ? (
+                <div className="flex flex-col gap-2.5">
+                  <div>
+                    <p className="text-[13px] font-medium">{agentStatusLabel(run.status)}</p>
+                    <p className="text-[13px] break-words text-muted">{run.instruction}</p>
+                  </div>
+                  <AgentTimeline entries={run.timeline} />
+                </div>
+              ) : (
+                <p className="text-[13px] text-muted">
+                  No task yet. Tell Dopilot what to do, and each step will appear here.
+                </p>
+              )}
             </Panel>
             <Panel title="Recent actions">
               {state ? (

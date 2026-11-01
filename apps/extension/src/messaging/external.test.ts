@@ -19,7 +19,7 @@ const state: ExtensionState = {
     models: [],
     selectedModel: null,
   },
-  agentStatus: 'idle',
+  agent: null,
   recentActions: [],
 };
 
@@ -30,6 +30,9 @@ function setup(overrides: Partial<ExternalDeps> = {}) {
     execute: vi.fn(async () => ({ ok: true as const, message: 'Done.' })),
     cancel: vi.fn(),
     openSettings: vi.fn(async () => undefined),
+    startAgent: vi.fn(async () => null),
+    stopAgent: vi.fn(async () => undefined),
+    resetAgent: vi.fn(async () => undefined),
     ...overrides,
   };
   return { deps, handle: createExternalHandler(deps) };
@@ -102,6 +105,56 @@ describe('structured responses', () => {
     const target = crypto.randomUUID();
     await handle(message('external.cancel', { targetRequestId: target }), { origin: ORIGIN });
     expect(deps.cancel).toHaveBeenCalledWith(target);
+  });
+});
+
+describe('agent control from the website', () => {
+  const start = (instruction: unknown) => message('external.agent_start', { instruction });
+
+  it('starts and stops tasks', async () => {
+    const { handle, deps } = setup();
+    expect(await handle(start('open youtube'), { origin: ORIGIN })).toMatchObject({
+      type: 'external.agent_started',
+      error: null,
+    });
+    expect(deps.startAgent).toHaveBeenCalledWith('open youtube', undefined);
+    await handle(message('external.agent_stop'), { origin: ORIGIN });
+    expect(deps.stopAgent).toHaveBeenCalled();
+  });
+
+  it('tells the agent which tab is the website, so it is left alone', async () => {
+    const { handle, deps } = setup();
+    await handle(start('open youtube'), { origin: ORIGIN, tabId: 42 });
+    expect(deps.startAgent).toHaveBeenCalledWith('open youtube', 42);
+  });
+
+  it('reports why a task could not start', async () => {
+    const { handle } = setup({ startAgent: async () => 'Add your key first.' });
+    expect(await handle(start('x'), { origin: ORIGIN })).toMatchObject({
+      error: 'Add your key first.',
+    });
+  });
+
+  it('other origins cannot start or stop anything', async () => {
+    const { handle, deps } = setup();
+    await handle(start('x'), { origin: 'https://evil.example' });
+    await handle(message('external.agent_stop'), { origin: 'https://evil.example' });
+    expect(deps.startAgent).not.toHaveBeenCalled();
+    expect(deps.stopAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects any attempt to answer an approval', async () => {
+    const { handle } = setup();
+    const answer = message('external.resolve_approval', { id: 'a', approved: true });
+    expect(await handle(answer, { origin: ORIGIN })).toMatchObject({ reason: 'invalid_message' });
+  });
+
+  it('rate limits starting tasks', async () => {
+    const { handle, deps } = setup({ rateLimiter: new RateLimiter(1, 1000, () => 5000) });
+    await handle(start('a'), { origin: ORIGIN });
+    const limited = await handle(start('b'), { origin: ORIGIN });
+    expect(limited).toMatchObject({ error: expect.stringMatching(/too many/i) });
+    expect(deps.startAgent).toHaveBeenCalledTimes(1);
   });
 });
 

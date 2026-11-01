@@ -11,7 +11,10 @@ export const GroqConnectionStateSchema = z.enum([
 ]);
 export type GroqConnectionState = z.infer<typeof GroqConnectionStateSchema>;
 
-export const GroqModelSchema = z.strictObject({ id: z.string().min(1) });
+export const GroqModelSchema = z.strictObject({
+  id: z.string().min(1),
+  contextWindow: z.number().positive().optional(),
+});
 export type GroqModel = z.infer<typeof GroqModelSchema>;
 
 export const GroqConnectionSchema = z.strictObject({
@@ -68,4 +71,38 @@ export function describeGroqConnection(status: GroqStatus): string {
     case 'service_error':
       return 'Groq is having problems. Try again later.';
   }
+}
+
+// Groq's model list has no capability field, so this goes by name. A model that turns out
+// not to support tools is skipped at run time, so a wrong guess only costs one request.
+const NOT_FOR_TOOLS = /whisper|tts|orpheus|playai|guard|embed|compound|allam|vision/i;
+const PREFERRED_FOR_TOOLS = [
+  /llama-3\.3-70b-versatile/i,
+  /gpt-oss-120b/i,
+  /llama-4-maverick/i,
+  /llama-4-scout/i,
+  /kimi-k2/i,
+  /qwen3/i,
+  /gpt-oss/i,
+  /llama-3\.1-8b-instant/i,
+];
+
+export function isToolModelCandidate(id: string): boolean {
+  return !NOT_FOR_TOOLS.test(id);
+}
+
+/** Best first. Known good families lead, then the largest context window. */
+export function rankToolModels(models: GroqModel[]): GroqModel[] {
+  const rank = (id: string) => {
+    const index = PREFERRED_FOR_TOOLS.findIndex((pattern) => pattern.test(id));
+    return index === -1 ? PREFERRED_FOR_TOOLS.length : index;
+  };
+  return models
+    .filter((model) => isToolModelCandidate(model.id))
+    .sort(
+      (a, b) =>
+        rank(a.id) - rank(b.id) ||
+        (b.contextWindow ?? 0) - (a.contextWindow ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
 }

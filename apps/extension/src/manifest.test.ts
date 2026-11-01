@@ -10,9 +10,12 @@ const manifest = JSON.parse(
 
 describe('manifest', () => {
   it('requests only what is needed up front', () => {
-    expect(manifest.permissions.sort()).toEqual(['sidePanel', 'storage']);
+    expect(manifest.permissions.sort()).toEqual(['activeTab', 'scripting', 'sidePanel', 'storage']);
     expect(manifest.host_permissions).toEqual(['https://api.groq.com/*']);
     expect(manifest.optional_permissions).toEqual(['tabs']);
+    // Sites are granted one at a time, at the moment the agent needs them.
+    expect(manifest.optional_host_permissions).toEqual(['http://*/*', 'https://*/*']);
+    expect(JSON.stringify(manifest.permissions)).not.toContain('<all_urls>');
   });
 
   it('exposes nothing to webpages beyond the allowed origin', () => {
@@ -26,7 +29,8 @@ describe('manifest', () => {
   it('limits extension network access to Groq and forbids remote code', () => {
     const csp = manifest.content_security_policy.extension_pages;
     expect(csp).toContain("script-src 'self'");
-    expect(csp).toContain('connect-src https://api.groq.com');
+    // The second address is the local development MCP bridge, which is off by default.
+    expect(csp).toContain('connect-src https://api.groq.com http://127.0.0.1:4319;'.slice(0, -1));
     expect(csp).not.toContain('unsafe-eval');
   });
 

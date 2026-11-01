@@ -109,6 +109,31 @@ export async function openExtensionSettings(extensionId: string): Promise<boolea
   return outcome.ok && outcome.response.type === 'external.ack';
 }
 
+/** Resolves to why the task could not start, or null. */
+export async function startAgentTask(
+  extensionId: string,
+  instruction: string,
+): Promise<string | null> {
+  const outcome = await send(extensionId, { type: 'external.agent_start', instruction });
+  if (!outcome.ok) {
+    return outcome.failure === 'extension_unavailable'
+      ? 'The Dopilot extension isn’t connected, so nothing was done.'
+      : 'The extension didn’t respond, so the task may not have started.';
+  }
+  return outcome.response.type === 'external.agent_started'
+    ? outcome.response.error
+    : 'The extension refused that request.';
+}
+
+export async function stopAgentTask(extensionId: string): Promise<boolean> {
+  const outcome = await send(extensionId, { type: 'external.agent_stop' });
+  return outcome.ok && outcome.response.type === 'external.ack';
+}
+
+export async function resetAgent(extensionId: string): Promise<void> {
+  await send(extensionId, { type: 'external.agent_reset' });
+}
+
 const FAILURE_RESULTS: Record<BridgeFailure, CommandResult> = {
   extension_unavailable: commandError(
     'extension_unavailable',

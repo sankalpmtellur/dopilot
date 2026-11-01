@@ -1,181 +1,259 @@
-# TASK 2 — DOPILOT: Frontend, Extension UI & Browser Controls
+# TASK 3 — DOPILOT: Build the AI Browser Agent
 
 ## Objective
 
-Continue developing the existing Dopilot monorepo.
+Continue the existing Dopilot monorepo. Task 1 and Task 2 are complete.
 
-Build a polished, modern web application and browser-extension side panel. Implement secure Groq API key management and functional browser controls.
+Implement a functional Groq-powered AI browser agent that can understand natural-language instructions, observe webpages, reason about actions, execute browser tools, and repeat until a task is completed.
 
-The existing monorepo, frontend-extension communication, Fastify backend, and shared packages are already working.
+Do not rebuild the existing frontend, extension, or backend.
 
-**Do not rebuild the project or change its architecture unnecessarily.**
+## 1. Groq AI Integration
 
-## 1. Frontend Website
+Implement real AI inference using the user's saved Groq API key.
 
-Build a professional, responsive application using Next.js, React, TypeScript, Tailwind CSS, and Lucide icons.
+Requirements:
+- Use the official Groq SDK.
+- Discover supported tool-calling models dynamically.
+- Select an appropriate default model with reliable tool calling.
+- Allow users to change models in settings.
+- Handle API errors, rate limits, timeouts, and invalid models.
+- Keep API requests inside the extension.
+- Never send API keys to Dopilot's backend.
+- Avoid unnecessary requests to conserve users' free API quotas.
 
-Design requirements:
-- Minimal, premium AI-product aesthetic.
-- Light and dark themes.
-- Smooth, subtle animations.
-- Responsive desktop and mobile layouts.
-- Clean typography, spacing, and accessible components.
-- Avoid generic dashboard templates or excessive gradients.
+Ensure the model can call structured browser tools rather than returning unvalidated browser commands.
 
-### Main interface
+## 2. Autonomous Agent Loop
 
-Include:
+Implement a proper agent execution loop inside `packages/agent-core`.
 
-1. Dopilot branding and navigation.
-2. AI conversation interface with message history.
-3. Text command input.
-4. Microphone button (UI placeholder only).
-5. Extension connection status.
-6. Active browser tab information.
-7. Agent activity panel (prepared for future tasks).
-8. Settings panel.
-9. Groq API key configuration.
-10. Clear onboarding flow for first-time users.
+Execution workflow:
 
-Display accurate empty states. Do not simulate successful AI responses or browser actions.
+1. Receive the user's instruction.
+2. Observe the relevant browser state.
+3. Send the instruction, observations, and available tools to Groq.
+4. Receive the AI's next tool call.
+5. Validate the requested action.
+6. Execute the browser action.
+7. Observe the result.
+8. Return the result to the AI.
+9. Repeat until completion, user cancellation, or execution limit.
 
-## 2. Groq API Key Integration
+Requirements:
+- Maximum 15 actions per task by default.
+- Maximum 5 minutes per task.
+- Maximum 3 consecutive recoverable failures.
+- Prevent infinite loops and repetitive actions.
+- Handle multiple tool calls safely.
+- Support user cancellation.
+- Provide meaningful error messages.
+- Detect when the task is complete.
+- Pause for approval before sensitive actions.
+- Ensure the loop can recover safely from Manifest V3 service-worker suspension.
 
-Implement functional user-provided Groq API key management.
+Do not implement an uncontrolled background agent.
+
+## 3. Browser Observation Tools
+
+Implement webpage understanding using Chrome Extension APIs.
+
+Add the following tools:
+
+- `get_active_tab`
+- `get_page_content`
+- `get_interactive_elements`
+- `get_page_metadata`
+- `get_visible_text`
+- `get_tabs`
+
+The agent should understand:
+- Page title and URL.
+- Headings.
+- Visible text.
+- Buttons.
+- Links.
+- Input fields.
+- Forms.
+- Interactive elements.
+- Accessible labels and roles.
+
+Use DOM inspection and accessibility-friendly element identification.
+
+Do not collect hidden passwords, cookies, authentication tokens, or unnecessary personal information.
+
+Use explicit user-granted permissions for the websites the agent operates.
+
+Prefer `activeTab` and narrowly scoped optional host permissions rather than unrestricted website access.
+
+## 4. Browser Interaction Tools
+
+Extend `packages/browser-tools`.
+
+Implement:
+
+- `open_tab`
+- `navigate`
+- `switch_tab`
+- `close_tab`
+- `reload_tab`
+- `go_back`
+- `go_forward`
+- `click_element`
+- `type_text`
+- `clear_input`
+- `scroll_page`
+- `select_option`
+- `press_key`
+- `wait_for_element`
 
 Requirements:
 
-- Users can enter their own Groq API key.
-- Save it locally in extension-owned storage, not our backend.
-- Never store keys in the website's localStorage or cookies.
-- Never log or expose keys in browser messages.
-- Provide Save, Remove, and Connection Test actions.
-- Show only masked key information.
-- Test the key using an inexpensive authenticated Groq API request.
-- Handle invalid, expired, and rate-limited keys.
-- Support changing keys without reinstalling the extension.
-- Never ship a shared API key.
+- Use native browser extension APIs and content scripts.
+- Use stable element references generated from observations.
+- Revalidate targets before interacting.
+- Handle dynamic websites.
+- Support scrolling to elements before clicking.
+- Verify the result of important actions.
+- Report failure if an element cannot be found.
+- Handle navigation and page-loading delays.
 
-Keep all Groq requests inside the extension.
+Do not use arbitrary AI-generated JavaScript, unsafe evaluation, or unrestricted keyboard shortcuts.
 
-Use the installed Groq SDK where appropriate, with browser compatibility and security considerations.
+## 5. Natural-Language Understanding
 
-Implement configurable text-model selection using supported Groq models. Do not assume a particular model is permanently available.
+Users should be able to type commands such as:
 
-Do not make any AI requests except those explicitly triggered by the user's connection test.
+- "Open a new tab."
+- "Open YouTube."
+- "Search Google for machine learning tutorials."
+- "Switch to my GitHub tab."
+- "Scroll down."
+- "Click the login button."
+- "Open my college website."
+- "Find the assignments section."
+- "Read the question displayed on this page."
+- "Click Next."
+- "Go back and open another tab."
 
-## 3. Browser Extension Side Panel
+The AI should interpret the user's intent and choose the appropriate browser tools.
 
-Replace the existing placeholder panel with a complete, compact Dopilot interface.
+Implement multi-step instruction handling.
 
-Include:
+Example:
 
-- Chat-style conversation layout.
-- Text command input.
-- Microphone button (disabled or marked Coming Soon).
-- Current tab display.
-- Extension/Groq connection indicators.
-- Recent browser actions.
-- Settings access.
-- Stop button for future agent execution.
+"Open a new tab, go to Wikipedia, search for artificial intelligence, and scroll to the history section."
 
-The side panel should be usable independently of the website.
+The agent should execute the necessary actions sequentially, observing the page between steps.
 
-Reuse shared UI components where practical, while accommodating the narrow side-panel layout.
+Avoid pretending actions succeeded when they did not.
 
-## 4. Basic Browser Tools
+## 6. MCP Tool Integration
 
-Implement functional browser controls using Manifest V3 APIs.
-
-Support these explicit commands:
-
-- Open a new tab.
-- Open a specified URL.
-- Switch between tabs.
-- List currently open tabs.
-- Reload the current tab.
-- Go back.
-- Go forward.
-- Close a tab, with confirmation.
-
-For this task, implement these through deterministic command parsing or direct UI controls.
-
-**Do not use Groq to interpret natural-language commands yet.**
-
-Examples:
-
-- `new tab`
-- `open https://youtube.com`
-- `list tabs`
-- `reload`
-- `go back`
-
-Show actual results or errors in the interface.
-
-Use the minimum necessary browser permissions. Never allow arbitrary scripts or unrestricted privileged actions from website messages.
-
-## 5. Website–Extension Communication
-
-Extend the existing communication bridge.
+Use the existing `packages/mcp-tools` and official MCP TypeScript SDK v2.
 
 Requirements:
 
-- Website can display extension connection status.
-- Website can send validated browser commands.
-- Extension validates every incoming command.
-- Extension returns structured success/error responses.
-- Requests have unique IDs, timeouts, and cancellation handling.
-- Enforce strict origin checks.
-- Never send Groq API keys through the bridge.
-- Keep communication types in `packages/shared`.
-- Ensure the website cannot invoke arbitrary privileged extension APIs.
+- Expose browser capabilities through MCP-compatible tools.
+- Use shared Zod schemas for arguments and responses.
+- Connect MCP tool definitions to the same validated browser-tool registry used by the agent.
+- Avoid duplicate tool implementations.
+- Separate tool registration from execution.
+- Ensure permissions and authorization checks apply equally to MCP calls.
+- Provide a functional local MCP server entry point for development/testing.
+- Do not expose an unauthenticated remote MCP endpoint.
 
-Handle disconnected extensions gracefully.
+Important: The extension must remain installable without Node.js or a separate MCP server. Use an adapter where required; do not bundle Node-only MCP transports into the browser extension.
 
-## 6. Extension Permissions & Security
+Verify that MCP tools are genuinely callable, not merely declared.
 
-- Follow Manifest V3 security requirements.
-- Use least-privilege permissions.
-- Request optional permissions only when needed.
-- Block dangerous URL schemes and restricted pages.
-- Validate URL input before navigation.
-- Prevent access to internal browser settings and extension pages.
-- Require confirmation for destructive actions.
-- Never execute AI-generated JavaScript.
-- Prepare future safeguards for prompt injection.
-- Respect user-initiated tab actions.
+## 7. Agent UI
 
-Do not request unrestricted website access by default.
+Update the existing website and side panel.
 
-## 7. State Management
+Add:
 
-Create clean state management for:
+- Live agent execution status.
+- Step-by-step activity timeline.
+- Tool execution results.
+- Current task indicator.
+- Stop execution button.
+- Approval prompts.
+- Error and retry states.
+- Final task summary.
 
-- Extension connection.
-- Groq connection status.
-- Browser tabs.
-- Conversation UI.
-- Settings.
-- Browser action results.
+Display clear statuses:
 
-Keep architecture ready for future autonomous agent execution.
+- Thinking
+- Observing
+- Executing
+- Waiting for approval
+- Completed
+- Failed
+- Cancelled
 
-Do not introduce a database for this task.
+Allow users to see what Dopilot is doing.
 
-## 8. Verification
+Keep the current frontend design system and improve it where necessary.
 
-Implement and run tests covering:
+## 8. Conversation Context
 
-1. Groq API key save/remove and masking.
-2. Invalid API key and rate-limit handling.
-3. Browser command validation.
-4. URL restrictions.
-5. Extension message authorization.
-6. Tab creation and navigation.
-7. Structured action results.
-8. Disconnected extension handling.
-9. Frontend and side-panel rendering.
-10. Chrome and Brave compatibility.
+Implement lightweight conversation history.
+
+Requirements:
+
+- Support follow-up commands.
+- Preserve the current task context.
+- Understand references such as "that tab" or "click the next one" when context is available.
+- Keep history bounded to prevent excessive token consumption.
+- Avoid repeatedly sending entire webpages to Groq.
+- Use concise tool results and trimmed page observations.
+- Store only the minimum information necessary.
+
+Do not introduce a database.
+
+## 9. Security
+
+Implement strict safety controls.
+
+- No arbitrary AI-generated JavaScript.
+- No unrestricted website access.
+- No access to browser internal pages.
+- No reading password fields or authentication secrets.
+- No execution of instructions embedded in webpages as if they came from the user.
+- Require approval for form submissions, purchases, account changes, sending messages, file uploads, and destructive actions.
+- Treat webpage content as untrusted data.
+- Prevent bypassing approval through indirect tool calls.
+- Keep permissions restricted to user-authorized websites.
+- Provide a prominent emergency Stop button.
+- Do not automate CAPTCHA solving or security challenges.
+- Never auto-submit graded quizzes or assessments; allow question reading, explanations, and user-reviewed suggestions.
+
+The user must retain control of browser actions.
+
+## 10. Testing
+
+Add comprehensive tests covering:
+
+1. Groq tool-calling integration.
+2. Model discovery and invalid-model handling.
+3. Agent execution loop.
+4. Multi-step commands.
+5. Tool argument validation.
+6. DOM inspection and element references.
+7. Clicking, typing, scrolling, and navigation.
+8. Handling missing elements.
+9. Dynamic webpage updates.
+10. Task cancellation.
+11. Execution limits.
+12. API rate limits.
+13. User approval flow.
+14. Prompt-injection resistance.
+15. MCP tool execution.
+16. Extension service-worker interruptions.
+17. Chrome and Brave compatibility.
+
+Use mocked Groq responses for automated tests.
 
 Run:
 
@@ -183,38 +261,67 @@ Run:
 - `pnpm typecheck`
 - `pnpm lint`
 - `pnpm test`
+- `pnpm verify:extension`
 
-Also manually test the website and extension in Brave if browser access is available.
+Fix discovered regressions.
 
-Do not claim manual tests passed unless verified.
+## 11. Real-World Verification
 
-## 9. Restrictions
+If browser access and a user-provided Groq key are available, test against real websites using the installed Brave browser.
 
-- No autonomous AI agent loop yet.
-- No AI vision or screenshot analysis yet.
-- No microphone implementation yet.
-- No Playwright or PyAutoGUI.
-- No paid services.
-- No deployment yet.
-- No unnecessary backend changes.
+Verify these workflows:
+
+**Test A**
+
+"Open a new tab and navigate to youtube.com."
+
+**Test B**
+
+"Open Wikipedia and search for artificial intelligence."
+
+**Test C**
+
+"Switch to my previously opened GitHub tab."
+
+**Test D**
+
+"Scroll down, find a specified heading, and click a relevant link."
+
+**Test E**
+
+Cancel an active multi-step task and verify execution stops.
+
+Never fabricate verification results.
+
+Do not make unnecessary paid API calls. Live Groq calls require an explicitly configured user key and should remain minimal.
+
+## 12. Restrictions
+
+- Do not implement voice recognition yet.
+- Do not implement screenshot-based vision yet.
+- Do not add Playwright or PyAutoGUI as runtime dependencies.
+- Do not introduce paid services.
+- Do not deploy yet.
+- Do not unnecessarily redesign the frontend.
 - Do not overwrite `note.txt`.
 - Do not create separate Markdown task reports.
-- Do not commit or push unless explicitly requested.
+- Do not commit or push without permission.
 
-## 10. Expected Outcome
+## 13. Expected Outcome
 
-At the end, users should be able to:
+At the end of Task 3, Dopilot should be a functioning AI-powered browser agent.
 
-1. Open Dopilot's website.
-2. See their connected Brave/Chrome extension.
-3. Configure their own Groq API key.
-4. Open the Dopilot side panel.
-5. Type basic commands such as `new tab`.
-6. Watch Dopilot execute those browser actions.
-7. Review successful actions and errors.
+A user should be able to:
 
-Keep the implementation production-minded, maintainable, and genuinely functional.
+1. Open Dopilot.
+2. Connect their Groq API key.
+3. Enter a natural-language instruction.
+4. Watch the AI understand the task.
+5. See browser actions executed automatically.
+6. Observe progress across multiple steps.
+7. Stop the task whenever necessary.
+8. Receive a final result.
 
-Provide a concise final summary of implemented features, tests, and any remaining limitations.
+Provide a concise implementation summary, test results, actual live verification status, and remaining limitations.
 
-**Next milestone: Task 3 — Groq-powered natural-language understanding and autonomous agent execution loop.**
+**Next milestone: Task 4 — Vision AI, Screenshot Understanding & Voice Commands.**

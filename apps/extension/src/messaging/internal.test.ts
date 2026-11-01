@@ -14,6 +14,13 @@ function deps(): InternalDeps {
     testGroq: vi.fn(),
     getConfirmationPrompt: vi.fn(() => 'Close tab?'),
     decideConfirmation: vi.fn(),
+    startAgent: vi.fn(async () => null),
+    stopAgent: vi.fn(async () => undefined),
+    resetAgent: vi.fn(async () => undefined),
+    resolveApproval: vi.fn(async () => undefined),
+    getApproval: vi.fn(async () => null),
+    mcpStatus: () => ({ enabled: false, connected: false }),
+    mcpConfigure: vi.fn(async () => undefined),
   };
 }
 
@@ -49,6 +56,36 @@ describe('handleInternalMessage', () => {
     expect(await handleInternalMessage(decide, sender, mocks)).toBeNull();
     expect(mocks.execute).not.toHaveBeenCalled();
     expect(mocks.decideConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('accepts approval answers only from extension pages', async () => {
+    const mocks = deps();
+    const answer = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'panel.resolve_approval',
+      id: 'approval-1',
+      approved: true,
+    };
+    expect(
+      await handleInternalMessage(answer, { id: ID, origin: 'https://evil.example' }, mocks),
+    ).toBeNull();
+    expect(mocks.resolveApproval).not.toHaveBeenCalled();
+
+    await handleInternalMessage(answer, page, mocks);
+    expect(mocks.resolveApproval).toHaveBeenCalledWith('approval-1', true);
+  });
+
+  it('only lets extension pages configure the MCP bridge', async () => {
+    const mocks = deps();
+    const configure = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'panel.mcp_configure',
+      token: 'x',
+    };
+    expect(
+      await handleInternalMessage(configure, { id: ID, origin: 'https://evil.example' }, mocks),
+    ).toBeNull();
+    expect(mocks.mcpConfigure).not.toHaveBeenCalled();
   });
 
   it('ignores invalid messages', async () => {

@@ -10,6 +10,7 @@ import {
 } from '@/lib/browser-commands';
 import { ConfirmationManager } from '@/lib/confirmations';
 import { hasTabDetails } from '@/permissions/tab-details';
+import { agentRunner } from './agent-host';
 
 export const confirmations = new ConfirmationManager({
   async open(id) {
@@ -30,12 +31,13 @@ export async function buildState(
   source: CommandSource,
   senderTabId?: number,
 ): Promise<ExtensionState> {
-  const [tabDetailsAvailable, tabs, currentTabId, groq, recentActions] = await Promise.all([
+  const [tabDetailsAvailable, tabs, currentTabId, groq, recentActions, agent] = await Promise.all([
     hasTabDetails(),
     listTabs(chromeBrowserApi),
     findCurrentTabId(chromeBrowserApi, source, senderTabId),
     loadGroqStatus(),
     loadActionLog(),
+    agentRunner.view(),
   ]);
   return {
     extensionVersion: chrome.runtime.getManifest().version,
@@ -43,7 +45,7 @@ export async function buildState(
     tabs,
     currentTabId,
     groq,
-    agentStatus: 'idle',
+    agent,
     recentActions,
   };
 }

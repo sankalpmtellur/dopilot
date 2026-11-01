@@ -1,6 +1,7 @@
 import type { TabInfo } from '@dopilot/shared';
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { AgentTimeline } from './agent-run.js';
 import { Button } from './button.js';
 import { TabList } from './tabs.js';
 import type { ConfirmationRequest, ConsoleMessage } from './use-command-console.js';
@@ -39,6 +40,16 @@ function MessageBubble({
   return (
     <div className="animate-rise">
       <p className={`text-sm break-words whitespace-pre-wrap ${tone}`}>{message.text}</p>
+      {message.steps && message.steps.length > 0 && (
+        <details className="group mt-1.5">
+          <summary className="cursor-pointer list-none text-xs text-faint hover:text-ink [&::-webkit-details-marker]:hidden">
+            {message.steps.length === 1 ? '1 step' : `${message.steps.length} steps`}
+          </summary>
+          <div className="mt-2">
+            <AgentTimeline entries={message.steps} />
+          </div>
+        </details>
+      )}
       {message.tabs && (
         <div className="mt-2 rounded-xl border border-line bg-surface p-1">
           <TabList tabs={message.tabs} {...(onSwitchTab && { onSwitch: onSwitchTab })} />

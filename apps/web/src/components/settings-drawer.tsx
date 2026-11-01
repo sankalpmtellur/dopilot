@@ -83,7 +83,7 @@ export function SettingsDrawer({
                 </div>
                 <p className="text-[13px] text-muted">{describeGroqConnection(state.groq)}</p>
                 <p className="text-[13px] text-muted">
-                  Model: {state.groq.selectedModel ?? 'none chosen'}
+                  Model: {state.groq.selectedModel ?? 'Automatic'}
                 </p>
               </>
             ) : (

@@ -211,6 +211,9 @@ importers:
 
   apps/backend:
     dependencies:
+      '@dopilot/browser-tools':
+        specifier: workspace:*
+        version: link:../../packages/browser-tools
       '@dopilot/mcp-tools':
         specifier: workspace:*
         version: link:../../packages/mcp-tools
@@ -220,6 +223,9 @@ importers:
       '@fastify/cors':
         specifier: ^11.3.1
         version: 11.3.1
+      '@modelcontextprotocol/server':
+        specifier: ^2.4.0
+        version: 2.4.0
       fastify:
         specifier: ^5.12.7
         version: 5.12.7
@@ -227,6 +233,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@modelcontextprotocol/client':
+        specifier: ^2.4.0
+        version: 2.4.0
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -322,6 +331,9 @@ importers:
 
   packages/agent-core:
     dependencies:
+      '@dopilot/browser-tools':
+        specifier: workspace:*
+        version: link:../browser-tools
       '@dopilot/shared':
         specifier: workspace:*
         version: link:../shared
@@ -340,6 +352,9 @@ importers:
       '@dopilot/browser-tools':
         specifier: workspace:*
         version: link:../browser-tools
+      '@dopilot/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@modelcontextprotocol/server':
         specifier: ^2.4.0
         version: 2.4.0

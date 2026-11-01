@@ -1,5 +1,6 @@
 import { PanelResponseSchema, PROTOCOL_VERSION } from '@dopilot/shared';
 import type {
+  AgentApproval,
   BrowserCommand,
   CommandResult,
   ExtensionState,
@@ -46,6 +47,49 @@ export async function testGroqConnection(): Promise<GroqStatus> {
 
 export async function stopAgent(): Promise<void> {
   await send({ type: 'panel.stop_agent' });
+}
+
+export async function startAgent(instruction: string): Promise<string | null> {
+  const response = await send({ type: 'panel.start_agent', instruction });
+  return response.type === 'panel.agent_started' ? response.error : unexpected();
+}
+
+export async function resetConversation(): Promise<void> {
+  await send({ type: 'panel.reset_conversation' });
+}
+
+export async function resolveApproval(id: string, approved: boolean): Promise<void> {
+  await send({ type: 'panel.resolve_approval', id, approved });
+}
+
+export async function getApproval(id: string): Promise<AgentApproval | null> {
+  const response = await send({ type: 'panel.get_approval', id });
+  return response.type === 'panel.approval' ? response.approval : unexpected();
+}
+
+/**
+ * Answers an approval from a click. Permissions must be requested inside the click
+ * itself, because browsers refuse them anywhere else, so this cannot be left to the worker.
+ */
+export async function answerApproval(approval: AgentApproval, approved: boolean): Promise<void> {
+  let granted = approved;
+  if (approved && approval.kind === 'site_access' && approval.origin) {
+    granted = await chrome.permissions.request({ origins: [`${approval.origin}/*`] });
+  } else if (approved && approval.kind === 'tab_details') {
+    granted = await chrome.permissions.request({ permissions: ['tabs'] });
+  }
+  await resolveApproval(approval.id, granted);
+}
+
+export async function getMcpStatus(): Promise<{ enabled: boolean; connected: boolean }> {
+  const response = await send({ type: 'panel.mcp_status' });
+  return response.type === 'panel.mcp_status'
+    ? { enabled: response.enabled, connected: response.connected }
+    : unexpected();
+}
+
+export async function configureMcp(token: string | null): Promise<void> {
+  await send({ type: 'panel.mcp_configure', token });
 }
 
 export async function getConfirmationPrompt(id: string): Promise<string | null> {

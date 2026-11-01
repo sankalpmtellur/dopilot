@@ -19,6 +19,8 @@ type Tab = chrome.tabs.Tab;
 export interface BrowserApi {
   queryTabs(query: chrome.tabs.QueryInfo): Promise<Tab[]>;
   createTab(properties: { url?: string }): Promise<Tab>;
+  getTab(tabId: number): Promise<Tab>;
+  navigateTab(tabId: number, url: string): Promise<unknown>;
   activateTab(tabId: number): Promise<unknown>;
   focusWindow(windowId: number): Promise<unknown>;
   reload(tabId: number): Promise<void>;
@@ -30,6 +32,8 @@ export interface BrowserApi {
 export const chromeBrowserApi: BrowserApi = {
   queryTabs: (query) => chrome.tabs.query(query),
   createTab: (properties) => chrome.tabs.create(properties),
+  getTab: (tabId) => chrome.tabs.get(tabId),
+  navigateTab: (tabId, url) => chrome.tabs.update(tabId, { url }),
   activateTab: (tabId) => chrome.tabs.update(tabId, { active: true }),
   focusWindow: (windowId) => chrome.windows.update(windowId, { focused: true }),
   reload: (tabId) => chrome.tabs.reload(tabId),

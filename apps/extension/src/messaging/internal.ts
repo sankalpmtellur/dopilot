@@ -1,5 +1,6 @@
 import { PanelRequestSchema, PROTOCOL_VERSION } from '@dopilot/shared';
 import type {
+  AgentApproval,
   BrowserCommand,
   CommandResult,
   ExtensionState,
@@ -15,6 +16,13 @@ export interface InternalDeps {
   testGroq(): Promise<GroqStatus>;
   getConfirmationPrompt(id: string): string | null;
   decideConfirmation(id: string, approved: boolean): void;
+  startAgent(instruction: string): Promise<string | null>;
+  stopAgent(): Promise<void>;
+  resetAgent(): Promise<void>;
+  resolveApproval(id: string, approved: boolean): Promise<void>;
+  getApproval(id: string): Promise<AgentApproval | null>;
+  mcpStatus(): { enabled: boolean; connected: boolean };
+  mcpConfigure(token: string | null): Promise<void>;
 }
 
 /** Handles messages from extension pages. Returns null for anything else. */
@@ -51,8 +59,27 @@ export async function handleInternalMessage(
     case 'panel.decide_confirmation':
       deps.decideConfirmation(request.id, request.approved);
       return { ...base, type: 'panel.ack' };
+    case 'panel.start_agent':
+      return {
+        ...base,
+        type: 'panel.agent_started',
+        error: await deps.startAgent(request.instruction),
+      };
     case 'panel.stop_agent':
-      // Nothing can run yet. The agent loop will abort its ExecutionGuard here.
+      await deps.stopAgent();
       return { ...base, type: 'panel.ack' };
+    case 'panel.reset_conversation':
+      await deps.resetAgent();
+      return { ...base, type: 'panel.ack' };
+    case 'panel.resolve_approval':
+      await deps.resolveApproval(request.id, request.approved);
+      return { ...base, type: 'panel.ack' };
+    case 'panel.get_approval':
+      return { ...base, type: 'panel.approval', approval: await deps.getApproval(request.id) };
+    case 'panel.mcp_status':
+      return { ...base, type: 'panel.mcp_status', ...deps.mcpStatus() };
+    case 'panel.mcp_configure':
+      await deps.mcpConfigure(request.token);
+      return { ...base, type: 'panel.mcp_status', ...deps.mcpStatus() };
   }
 }

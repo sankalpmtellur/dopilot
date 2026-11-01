@@ -5,7 +5,7 @@
   "description": "Open-source, voice-controlled AI browser agent.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtrtTpPFi37uM48axdZADyL3I6Le4uJXjDEFfGN97Zsgsn3rnTaXpwWg68gWa2fuiyH0aXgzIMiKDYzmD4S/S2bdCng0AAE/KHIA3J5YE60d2Tfasn3tc+RtrHNa8b+YVDwpDPBtl51c4P5sQ1P/jT4r61YYldzX9n+CdwVQXDWlnvJLvIEdJ80sRccn5PLo4zNwEaeM1NoxeYeqkbpE7sp/ZTgNCMXcGKMfdCbTM8xzFbkAkhqA73KS6H15kc2uLcMViP8CfD9Y83cOUapItLdUvB06kHgXT0V87Dx89BfFFJjBFLHjyo0N9YL+/F8hApXOW0yd7kq/XcSD4qyVDgwIDAQAB",
   "minimum_chrome_version": "121",
-  "permissions": ["sidePanel", "storage"],
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
   "host_permissions": ["https://api.groq.com/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
@@ -26,7 +26,7 @@
     "matches": ["http://localhost:3000/*"]
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://api.groq.com"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://api.groq.com http://127.0.0.1:4319"
   },
   "optional_permissions": ["tabs"]
 }

@@ -23,7 +23,7 @@ const state: ExtensionState = {
     models: [{ id: 'model-a' }],
     selectedModel: 'model-a',
   },
-  agentStatus: 'idle',
+  agent: null,
   recentActions: [],
 };
 
@@ -145,6 +145,66 @@ describe('with the extension', () => {
     sendMessage.mockRejectedValue(new Error('Extension context invalidated.'));
     window.dispatchEvent(new Event('focus'));
     expect((await screen.findAllByText('Extension not connected')).length).toBeGreaterThan(0);
+  });
+
+  const running: ExtensionState['agent'] = {
+    id: 'run-1',
+    instruction: 'Open Wikipedia',
+    source: 'website',
+    status: 'waiting_for_approval',
+    notice: null,
+    model: 'model-a',
+    startedAt: 0,
+    finishedAt: null,
+    actionCount: 1,
+    maxActions: 15,
+    timeline: [{ id: '1', at: 0, kind: 'act', status: 'done', label: 'Opening Wikipedia' }],
+    approval: { id: 'a1', kind: 'action', title: 'Click “Buy”?', detail: 'This spends money.' },
+    summary: null,
+    error: null,
+  };
+
+  it('sends natural language to the agent, and exact commands over the command channel', async () => {
+    const sendMessage = stubExtension();
+    render(<ConsoleApp />);
+    await waitForConnection();
+    await userEvent.type(screen.getByRole('textbox', { name: 'Command' }), 'Open Wikipedia{Enter}');
+    await waitFor(() =>
+      expect(sendMessage.mock.calls.map((call) => call[1].type)).toContain('external.agent_start'),
+    );
+  });
+
+  it('shows a running task, and an approval the website cannot answer', async () => {
+    stubExtension({ ...state, agent: running });
+    render(<ConsoleApp />);
+    expect((await screen.findAllByText('Waiting for approval')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Open Wikipedia').length).toBeGreaterThan(0);
+    expect(screen.getByRole('alertdialog').textContent).toContain('Click “Buy”?');
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+  });
+
+  it('can stop a running task', async () => {
+    const sendMessage = stubExtension({ ...state, agent: running });
+    render(<ConsoleApp />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop task' }));
+    await waitFor(() =>
+      expect(sendMessage.mock.calls.map((call) => call[1].type)).toContain('external.agent_stop'),
+    );
+  });
+
+  it('shows the final result of a task', async () => {
+    stubExtension({
+      ...state,
+      agent: {
+        ...(running as NonNullable<typeof running>),
+        status: 'completed',
+        approval: null,
+        summary: 'Opened Wikipedia.',
+      },
+    });
+    render(<ConsoleApp />);
+    expect(await screen.findByText('Opened Wikipedia.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Stop task' })).toBeNull();
   });
 
   it('hides the setup guide once setup is finished, until asked for', async () => {

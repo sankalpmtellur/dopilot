@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dopilot/browser-tools": "workspace:*",
     "@dopilot/shared": "workspace:*"
   }
 }

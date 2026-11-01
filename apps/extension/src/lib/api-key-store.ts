@@ -93,6 +93,25 @@ export async function recordConnectionTest(
   });
 }
 
+/** Deselects a model Groq has reported as unavailable, so the next task chooses automatically. */
+export async function dropSelectedModel(modelId: string): Promise<void> {
+  const settings = await loadSettings();
+  if (settings.selectedModel !== modelId) return;
+  await chrome.storage.local.set({
+    [SETTINGS_STORAGE]: { ...settings, selectedModel: null } satisfies GroqSettings,
+  });
+}
+
+export async function markKeyRejected(state: 'invalid_key' | 'forbidden'): Promise<void> {
+  const settings = await loadSettings();
+  await chrome.storage.local.set({
+    [SETTINGS_STORAGE]: {
+      ...settings,
+      connection: { state, checkedAt: Date.now() },
+    } satisfies GroqSettings,
+  });
+}
+
 export async function selectModel(modelId: string | null): Promise<void> {
   const settings = await loadSettings();
   const known = modelId === null || settings.models.some((model) => model.id === modelId);

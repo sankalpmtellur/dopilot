@@ -21,7 +21,8 @@
     "test": "pnpm build:packages && vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify:extension": "node scripts/verify-extension.mjs"
+    "verify:extension": "node scripts/verify-extension.mjs",
+    "mcp": "pnpm --silent --filter @dopilot/backend mcp"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

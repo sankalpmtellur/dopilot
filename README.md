@@ -3,8 +3,8 @@
 Open-source, voice-controlled AI browser agent for Chrome and Brave. Users bring
 their own Groq API key.
 
-> **Status:** the website, side panel, Groq key management and explicit browser commands
-> work. Natural-language understanding, the autonomous agent and voice are not built yet.
+> **Status:** the AI agent works: tell it what to do and it observes pages, acts through
+> validated tools, and asks before anything sensitive. Voice and vision are not built yet.
 
 ## Requirements
 
@@ -37,13 +37,32 @@ Health checks: `GET http://127.0.0.1:4000/health` and `GET http://localhost:3000
 4. Click the Dopilot toolbar icon to open the side panel.
 5. Open http://localhost:3000. The website finds the extension by itself.
 
-Add your Groq key under Settings in the side panel. Browser commands work without one.
+## Using the agent
 
-## Commands
+Add your Groq API key under Settings in the side panel, then type what you want:
 
-Commands are matched exactly and never interpreted by AI. Type `help` to list them:
-`new tab`, `open <address>`, `list tabs`, `switch to tab <n>`, `reload`, `go back`,
-`go forward`, `close tab`, `close tab <n>`.
+- `Open Wikipedia and search for artificial intelligence, then scroll to the history section`
+- `Switch to my GitHub tab`
+- `Read the question displayed on this page`
+
+Dopilot shows each step, and you can stop it at any time. It asks before using a new site and
+before anything sensitive, such as sending, buying or deleting. It will not enter passwords, solve
+CAPTCHAs or submit graded quizzes. Choose a model in Settings, or leave it on Automatic.
+
+Exact commands run instantly, without AI or a key. Type `help` to list them: `new tab`,
+`open <address>`, `list tabs`, `switch to tab <n>`, `reload`, `go back`, `go forward`, `close tab`,
+`close tab <n>`.
+
+## MCP (local development)
+
+Build first, then point an MCP client at the server. It prints a token to stderr:
+
+```bash
+node apps/backend/dist/mcp/stdio.js
+```
+
+Paste the token under Settings, Developer: local MCP bridge. Calls use the same permission and
+safety checks as the agent, and anything needing approval is refused.
 
 ## Checks
 
@@ -53,7 +72,7 @@ pnpm lint
 pnpm test
 pnpm format:check
 pnpm build
-pnpm verify:extension  # needs pnpm dev:web running; drives real Chrome and Brave with throwaway profiles
+pnpm verify:extension  # needs pnpm dev:web running; drives real Chrome and Brave with throwaway profiles, with Groq stubbed
 ```
 
 ## Layout

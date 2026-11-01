@@ -21,7 +21,8 @@
   "dependencies": {
     "@dopilot/browser-tools": "workspace:*",
     "@modelcontextprotocol/server": "^2.4.0",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@dopilot/shared": "workspace:*"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0"

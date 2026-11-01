@@ -1,5 +1,17 @@
-import { COMMAND_EXAMPLES, commandError, describeCommand, parseCommand } from '@dopilot/shared';
-import type { BrowserCommand, CommandResult, TabInfo } from '@dopilot/shared';
+import {
+  COMMAND_EXAMPLES,
+  commandError,
+  describeCommand,
+  isAgentActive,
+  parseCommand,
+} from '@dopilot/shared';
+import type {
+  AgentRunView,
+  AgentTimelineEntry,
+  BrowserCommand,
+  CommandResult,
+  TabInfo,
+} from '@dopilot/shared';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 export interface ConsoleMessage {
@@ -8,6 +20,8 @@ export interface ConsoleMessage {
   text: string;
   status: 'pending' | 'success' | 'error' | 'info';
   tabs?: TabInfo[];
+  /** What the agent did to reach this answer. */
+  steps?: AgentTimelineEntry[];
 }
 
 export interface ConfirmationRequest {
@@ -26,15 +40,22 @@ const MAX_MESSAGES = 100;
 
 export function consoleReducer(state: ConsoleMessage[], action: Action): ConsoleMessage[] {
   switch (action.type) {
-    case 'add':
-      return [...state, ...action.messages].slice(-MAX_MESSAGES);
+    case 'add': {
+      const known = new Set(state.map((message) => message.id));
+      const added = action.messages.filter((message) => !known.has(message.id));
+      return [...state, ...added].slice(-MAX_MESSAGES);
+    }
     case 'update':
       return state.map((message) =>
         message.id === action.id ? { ...message, ...action.changes } : message,
       );
-    case 'hydrate':
+    case 'hydrate': {
       // Messages typed before stored history finished loading are kept after it.
-      return [...action.messages, ...state].slice(-MAX_MESSAGES);
+      const stored = new Set(action.messages.map((message) => message.id));
+      return [...action.messages, ...state.filter((message) => !stored.has(message.id))].slice(
+        -MAX_MESSAGES,
+      );
+    }
     case 'clear':
       return [];
   }
@@ -58,6 +79,12 @@ export interface CommandConsoleOptions {
   save?: (messages: ConsoleMessage[]) => void;
   /** Runs after each browser command, so views can refresh. */
   onSettled?: () => void;
+  /**
+   * Hands anything that is not an exact command to the agent. Resolves to why it could
+   * not start, or null. Without this, such text is simply reported as not understood.
+   */
+  startTask?: (instruction: string) => Promise<string | null>;
+  onClear?: () => void;
 }
 
 function createId(): string {
@@ -65,7 +92,14 @@ function createId(): string {
 }
 
 /** Conversation state for both the website and the side panel. Results are never simulated. */
-export function useCommandConsole({ execute, load, save, onSettled }: CommandConsoleOptions) {
+export function useCommandConsole({
+  execute,
+  load,
+  save,
+  onSettled,
+  startTask,
+  onClear,
+}: CommandConsoleOptions) {
   const [messages, dispatch] = useReducer(consoleReducer, []);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [busy, setBusy] = useState(false);
@@ -73,9 +107,9 @@ export function useCommandConsole({ execute, load, save, onSettled }: CommandCon
   const hydrated = useRef(!load);
 
   // Callers may pass new function identities on each render.
-  const latest = useRef({ execute, load, save, onSettled });
+  const latest = useRef({ execute, load, save, onSettled, startTask, onClear });
   useEffect(() => {
-    latest.current = { execute, load, save, onSettled };
+    latest.current = { execute, load, save, onSettled, startTask, onClear };
   });
 
   useEffect(() => {
@@ -171,6 +205,37 @@ export function useCommandConsole({ execute, load, save, onSettled }: CommandCon
         return;
       }
 
+      if (parsed.kind === 'unknown' && latest.current.startTask) {
+        const instruction = text.trim();
+        dispatch({
+          type: 'add',
+          messages: [{ id: createId(), role: 'user', text: instruction, status: 'info' }],
+        });
+        void latest.current.startTask(instruction).then(
+          (problem) => {
+            if (!problem) return;
+            dispatch({
+              type: 'add',
+              messages: [{ id: createId(), role: 'dopilot', text: problem, status: 'error' }],
+            });
+          },
+          () => {
+            dispatch({
+              type: 'add',
+              messages: [
+                {
+                  id: createId(),
+                  role: 'dopilot',
+                  text: 'That task could not be started.',
+                  status: 'error',
+                },
+              ],
+            });
+          },
+        );
+        return;
+      }
+
       const reply: Pick<ConsoleMessage, 'text' | 'status'> =
         parsed.kind === 'help'
           ? { text: HELP_TEXT, status: 'info' }
@@ -211,7 +276,43 @@ export function useCommandConsole({ execute, load, save, onSettled }: CommandCon
   }, [confirmation]);
 
   const stop = useCallback(() => controller.current?.abort(), []);
-  const clear = useCallback(() => dispatch({ type: 'clear' }), []);
+  const clear = useCallback(() => {
+    dispatch({ type: 'clear' });
+    latest.current.onClear?.();
+  }, []);
 
-  return { messages, busy, confirmation, submit, runCommand, confirm, decline, stop, clear };
+  /** Adds a finished task's result to the conversation, once. */
+  const reportRun = useCallback((run: AgentRunView | null | undefined) => {
+    if (!run || isAgentActive(run.status)) return;
+    const text =
+      run.status === 'completed'
+        ? (run.summary ?? 'Done.')
+        : (run.error ?? run.summary ?? 'The task stopped.');
+    dispatch({
+      type: 'add',
+      messages: [
+        {
+          id: `run-${run.id}`,
+          role: 'dopilot',
+          text,
+          status:
+            run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'info',
+          steps: run.timeline,
+        },
+      ],
+    });
+  }, []);
+
+  return {
+    messages,
+    busy,
+    confirmation,
+    submit,
+    runCommand,
+    confirm,
+    decline,
+    stop,
+    clear,
+    reportRun,
+  };
 }

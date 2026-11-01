@@ -1,4 +1,5 @@
 export * from './activity.js';
+export * from './agent-run.js';
 export * from './brand.js';
 export * from './button.js';
 export * from './composer.js';

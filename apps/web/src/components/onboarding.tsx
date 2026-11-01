@@ -91,7 +91,7 @@ export function Onboarding({
               ? `Saved as ${groq.maskedKey} and connected.`
               : groq?.configured
                 ? `Saved as ${groq.maskedKey}. Test it in the extension to finish this step.`
-                : 'Your key is entered in the extension, so this website never sees it. Browser commands work without one.'}
+                : 'Your key is entered in the extension, so this website never sees it. Exact commands like “new tab” work without one.'}
           </p>
           {connected && groq?.connection.state !== 'connected' && (
             <Button className="mt-2" onClick={onOpenSettings}>
@@ -101,7 +101,9 @@ export function Onboarding({
         </Step>
 
         <Step index={3} title="Try a command" done={hasRunCommand}>
-          <p>Commands act on your real browser, and you’ll see exactly what happened.</p>
+          <p>
+            Dopilot acts on your real browser, shows each step, and asks before anything sensitive.
+          </p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {['new tab', 'list tabs', 'help'].map((command) => (
               <button

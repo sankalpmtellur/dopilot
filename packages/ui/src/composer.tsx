@@ -16,7 +16,7 @@ export interface CommandComposerProps {
 
 export function CommandComposer({
   onSubmit,
-  placeholder = 'Type a command, like “new tab”',
+  placeholder = 'Tell Dopilot what to do',
   onStop,
   canStop = false,
   value,

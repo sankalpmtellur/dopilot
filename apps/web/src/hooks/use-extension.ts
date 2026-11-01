@@ -1,10 +1,12 @@
 'use client';
 
+import { isAgentActive } from '@dopilot/shared';
 import type { ExtensionState } from '@dopilot/shared';
 import { useCallback, useEffect, useState } from 'react';
 import { fetchExtensionState, getExtensionId } from '@/lib/extension-bridge';
 
 const POLL_INTERVAL_MS = 4000;
+const ACTIVE_POLL_INTERVAL_MS = 800;
 
 export type ExtensionConnection =
   | { status: 'checking' }
@@ -24,20 +26,26 @@ export function useExtension() {
     setConnection(state ? { status: 'connected', state } : { status: 'unavailable' });
   }, [extensionId]);
 
+  const running =
+    connection.status === 'connected' &&
+    connection.state.agent !== null &&
+    isAgentActive(connection.state.agent.status);
+  const interval = running ? ACTIVE_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+
   useEffect(() => {
     const tick = () => {
       if (document.visibilityState === 'visible') void refresh();
     };
     tick();
-    const interval = setInterval(tick, POLL_INTERVAL_MS);
+    const timer = setInterval(tick, interval);
     window.addEventListener('focus', tick);
     document.addEventListener('visibilitychange', tick);
     return () => {
-      clearInterval(interval);
+      clearInterval(timer);
       window.removeEventListener('focus', tick);
       document.removeEventListener('visibilitychange', tick);
     };
-  }, [refresh]);
+  }, [refresh, interval]);
 
   return { connection, refresh, extensionId };
 }

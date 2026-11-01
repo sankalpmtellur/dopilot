@@ -29,7 +29,14 @@ describe('parseCommand', () => {
   });
 
   it('does not guess at natural language', () => {
-    for (const input of ['please find me a cheap flight', 'open youtube and play music', '']) {
+    for (const input of [
+      'please find me a cheap flight',
+      'open youtube and play music',
+      'Open YouTube.',
+      'open youtube',
+      'Scroll down.',
+      '',
+    ]) {
       expect(parseCommand(input).kind).toBe('unknown');
     }
   });
