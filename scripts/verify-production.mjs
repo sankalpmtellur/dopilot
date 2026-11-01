@@ -4,7 +4,7 @@
 // address resolves to this machine, so nothing here reaches the internet, Groq or Vercel.
 //
 //   DOPILOT_WEB_ORIGIN=https://dopilot.vercel.app DOPILOT_KEEP_KEY=1 pnpm release:extension
-//   NEXT_PUBLIC_DOPILOT_EXTENSION_IDS=doennedjpkdlajeeplfioihckoffjeld pnpm --filter @dopilot/web build
+//   pnpm --filter @dopilot/web build
 //   DOPILOT_WEB_ORIGIN=https://dopilot.vercel.app pnpm verify:production
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';

@@ -7,14 +7,15 @@ import type {
   ExternalResponse,
 } from '@dopilot/shared';
 
-/** Fixed by the public key in the development manifest. */
-const DEV_EXTENSION_ID = 'doennedjpkdlajeeplfioihckoffjeld';
+/** Fixed by the public key in the manifest, for local builds and the manual release ZIP. */
+const PINNED_EXTENSION_ID = 'doennedjpkdlajeeplfioihckoffjeld';
 
 /**
- * The extension IDs this deployment will talk to, in order of preference. A store listing
- * has its own ID, different from an unpacked copy, and it is the same in Chrome and Brave.
- * It is set when the site is built, so users never copy an ID, and the browser still only
- * lets this origin talk to an extension whose manifest names it.
+ * The extension IDs this deployment will talk to, in order of preference. With nothing
+ * configured that is the pinned ID, which every manual install shares. A store listing gets
+ * its own ID, the same in Chrome and Brave, so it is configured when the site is built. Users
+ * never copy an ID, and the browser only lets this origin talk to an extension whose manifest
+ * names it.
  */
 export function getExtensionIds(
   // The singular name is the older setting, still in existing local .env files.
@@ -26,7 +27,8 @@ export function getExtensionIds(
     .split(',')
     .map((id) => id.trim())
     .filter((id) => /^[a-p]{32}$/.test(id));
-  if (environment !== 'production' && !ids.includes(DEV_EXTENSION_ID)) ids.push(DEV_EXTENSION_ID);
+  const usePinned = ids.length === 0 || environment !== 'production';
+  if (usePinned && !ids.includes(PINNED_EXTENSION_ID)) ids.push(PINNED_EXTENSION_ID);
   return ids;
 }
 

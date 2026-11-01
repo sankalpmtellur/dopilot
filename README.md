@@ -110,13 +110,14 @@ Import the GitHub repository, with these project settings. `apps/web/vercel.json
 | Output Directory                         | Leave as the default (`.next`)                                        |
 | Node.js version                          | 22.x or newer                                                         |
 
-| Environment variable                         | Required | Value                                                                                       |
-| -------------------------------------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`          | Yes      | `doennedjpkdlajeeplfioihckoffjeld` for the manual ZIP. A production build stops without it. |
-| `NEXT_PUBLIC_DOPILOT_EXTENSION_DOWNLOAD_URL` | No       | Where visitors get the ZIP. Defaults to this repository's latest GitHub release.            |
+No environment variables are needed for the manual ZIP, and no Groq key or other secret belongs on Vercel. Two
+optional ones exist, both public and fixed at build time, so redeploy after changing one:
 
-These are public and fixed at build time, so redeploy after changing one. No Groq key or other secret belongs
-on Vercel. Vercel serves HTTPS, which browsers need for microphone access.
+| Environment variable                                            | Value                                                              |
+| --------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`                             | A store listing's ID. Defaults to the manual ZIP's pinned ID.      |
+| `NEXT_PUBLIC_DOPILOT_EXTENSION_DOWNLOAD_URL`                    | Where visitors get the ZIP. Defaults to the latest GitHub release. |
+| Vercel serves HTTPS, which browsers need for microphone access. |
 
 Only the origin the extension was built for can connect, so preview deployments show "Extension not connected".
 Browsers do not allow a wildcard on `vercel.app`.

@@ -162,9 +162,13 @@ describe('finding the extension', () => {
   const store = 'a'.repeat(32);
   const dev = 'doennedjpkdlajeeplfioihckoffjeld';
 
-  it('uses only the configured IDs in production, never the development one', () => {
+  it('uses only the configured IDs in production when there are any', () => {
     expect(getExtensionIds(store, 'production')).toEqual([store]);
-    expect(getExtensionIds(undefined, 'production')).toEqual([]);
+  });
+
+  it('needs no setting in production, so a deployment cannot fail or stay unconnected for it', () => {
+    expect(getExtensionIds(undefined, 'production')).toEqual([dev]);
+    expect(getExtensionIds('', 'production')).toEqual([dev]);
   });
 
   it('adds the development ID for local work, so existing installs keep working', () => {
@@ -173,7 +177,7 @@ describe('finding the extension', () => {
   });
 
   it('ignores anything that is not an extension ID', () => {
-    expect(getExtensionIds('https://evil.example,xyz', 'production')).toEqual([]);
+    expect(getExtensionIds('https://evil.example,xyz', 'production')).toEqual([dev]);
   });
 
   it('settles on whichever is installed', async () => {

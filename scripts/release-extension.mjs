@@ -83,6 +83,6 @@ if (manifest.key) {
   const id = [...hash.slice(0, 32)]
     .map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16)))
     .join('');
-  console.log(`Extension ID for NEXT_PUBLIC_DOPILOT_EXTENSION_IDS: ${id}`);
+  console.log(`Extension ID, which the website uses by default: ${id}`);
 }
 console.log('Run `pnpm build` afterwards to go back to a local development build.');
