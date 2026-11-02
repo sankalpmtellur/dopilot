@@ -10,6 +10,7 @@ import { wrapUntrustedContent } from '@dopilot/agent-core';
 import {
   DescribeResultSchema,
   isRestrictedTabUrl,
+  MAX_TABS_PER_REQUEST,
   parseSimpleInstruction,
   sanitizeTabTitle,
   sanitizeTabUrl,
@@ -43,6 +44,14 @@ const NAVIGATION_TOOL_TIMEOUT_MS = LOAD_TIMEOUT_MS + 10_000;
 const WAIT_MARGIN_MS = 8000;
 const VISION_TOOL_TIMEOUT_MS = 70_000;
 const EXTERNAL_CALL_TIMEOUT_MS = 50_000;
+/** Time for the browser to breathe between tabs, so a batch never freezes it. */
+const BATCH_PACE_MS = 30;
+/** Pages loading at once in a batch. Twenty at once would stall the machine. */
+const BATCH_MAX_LOADING = 4;
+const BATCH_LOADING_WAIT_MS = 4000;
+/** After this many refusals in a row the browser is saying no, so asking again is pointless. */
+const BATCH_MAX_CONSECUTIVE_FAILURES = 3;
+const BATCH_TOOL_TIMEOUT_MS = 120_000;
 
 export interface PermissionPort {
   hasTabDetails(): Promise<boolean>;
@@ -402,6 +411,62 @@ export function createToolService({
       return { decision: 'block', result: dopilotTabRefusal() };
     }
 
+    if (name === 'open_tabs') {
+      const urls = args.urls as string[] | undefined;
+      const size = urls ? urls.length : (args.count as number);
+      if (size > MAX_TABS_PER_REQUEST) {
+        return {
+          decision: 'block',
+          result: toolFailure(
+            'too_many_tabs',
+            `Dopilot opens at most ${MAX_TABS_PER_REQUEST} new tabs per request, and this asked for ${size.toLocaleString('en')}. No tabs were opened.`,
+            false,
+          ),
+        };
+      }
+      if (size < 1) {
+        return {
+          decision: 'block',
+          result: toolFailure(
+            'invalid_tab_count',
+            'That is no tabs, so nothing was opened.',
+            false,
+          ),
+        };
+      }
+      if (typeof args.activate === 'number' && args.activate > size) {
+        return {
+          decision: 'block',
+          result: toolFailure(
+            'invalid_tab_position',
+            `There would be no tab ${args.activate} among ${size} new tabs. No tabs were opened.`,
+            false,
+          ),
+        };
+      }
+      // Each address gets the same checks it would get on its own.
+      for (const url of urls ?? []) {
+        const validation = validateNavigationUrl(url);
+        if (!validation.ok) {
+          return {
+            decision: 'block',
+            result: toolFailure('blocked_url', `${validation.reason} No tabs were opened.`, false),
+          };
+        }
+        const decision = fromPolicy(
+          'open_tab',
+          assessToolCall('open_tab', { url }, null, {
+            ...(context.instruction !== undefined && { instruction: context.instruction }),
+            pageDataRead: context.pageDataRead === true,
+          }),
+          null,
+          { url },
+        );
+        if (decision.decision !== 'allow') return decision;
+      }
+      return { decision: 'allow' };
+    }
+
     if (name === 'open_tab' || name === 'navigate') {
       const url = args.url;
       if (typeof url === 'string') {
@@ -587,6 +652,9 @@ export function createToolService({
           };
         }
 
+        case 'open_tabs':
+          return await openTabs(args, context);
+
         case 'open_tab': {
           const url = args.url as string | undefined;
           const validated = url === undefined ? null : validateNavigationUrl(url);
@@ -634,6 +702,7 @@ export function createToolService({
             return {
               ok: true,
               summary: 'Opened a new tab.',
+              tabsCreated: 1,
               currentTabId: tab.id,
               pageChanged: true,
               untrusted: true,
@@ -641,7 +710,10 @@ export function createToolService({
             };
           }
           memory?.urls.set(validated.url, tab.id);
-          return await arrival(tab.id, validated.url, 'Opened', context.signal);
+          return {
+            ...(await arrival(tab.id, validated.url, 'Opened', context.signal)),
+            tabsCreated: 1,
+          };
         }
 
         case 'navigate': {
@@ -787,6 +859,132 @@ export function createToolService({
       }
       return toolFailure('execution_failed', 'That action could not be completed.');
     }
+  }
+
+  /** Waits for a free loading slot, without ever waiting long on one slow site. */
+  async function waitForLoadingSlot(loading: Set<number>, signal: AbortSignal): Promise<void> {
+    const deadline = Date.now() + BATCH_LOADING_WAIT_MS;
+    while (!signal.aborted && Date.now() < deadline) {
+      for (const id of loading) {
+        const tab = await api.getTab(id).catch(() => null);
+        if (!tab || tab.status === 'complete') loading.delete(id);
+      }
+      if (loading.size < BATCH_MAX_LOADING) return;
+      await sleep(LOAD_POLL_MS);
+    }
+  }
+
+  /**
+   * One batch of new tabs, in the background so the user's tab stays in front. Each is counted
+   * only once the browser has handed it back, and is checked again at the end. A tab the
+   * browser refused is reported, never retried blindly, so nothing can end up doubled.
+   */
+  async function openTabs(
+    args: Record<string, unknown>,
+    context: ToolContext,
+  ): Promise<ToolResult> {
+    const urls = (args.urls as string[] | undefined)?.map((url) => {
+      const validated = validateNavigationUrl(url);
+      return validated.ok ? validated.url : null;
+    });
+    if (urls?.includes(null))
+      return toolFailure('blocked_url', 'That address is not allowed.', false);
+    const total = urls ? urls.length : (args.count as number);
+    const created: number[] = [];
+    const loading = new Set<number>();
+    let failedInARow = 0;
+    let attempted = 0;
+
+    for (let index = 0; index < total; index += 1) {
+      if (context.signal.aborted) break;
+      if (failedInARow >= BATCH_MAX_CONSECUTIVE_FAILURES) break;
+      const url = urls?.[index];
+      context.onProgress?.({
+        done: created.length,
+        total,
+        label: `Creating tab ${index + 1} of ${total}`,
+      });
+      if (url && loading.size >= BATCH_MAX_LOADING)
+        await waitForLoadingSlot(loading, context.signal);
+      if (context.signal.aborted) break;
+
+      attempted += 1;
+      const tab = await api.createTab({ ...(url && { url }), active: false }).catch(() => null);
+      if (tab?.id === undefined) {
+        failedInARow += 1;
+      } else {
+        failedInARow = 0;
+        created.push(tab.id);
+        if (url) loading.add(tab.id);
+        // Reported even after Stop, because this tab now exists whatever happens next.
+        context.onProgress?.({
+          done: created.length,
+          total,
+          label: `Creating tab ${index + 1} of ${total}`,
+        });
+      }
+      if (index < total - 1) await sleep(BATCH_PACE_MS);
+    }
+
+    // What is really open now, not what was asked for or what once succeeded.
+    const present = await Promise.all(
+      created.map((id) =>
+        api.getTab(id).then(
+          () => id,
+          () => null,
+        ),
+      ),
+    );
+    const open = present.filter((id): id is number => id !== null);
+    const noun = urls ? 'tabs' : 'new tabs';
+
+    if (context.signal.aborted) {
+      return toolFailure(
+        'cancelled',
+        `Stopped after opening ${open.length} of ${total} tabs.`,
+        false,
+      );
+    }
+
+    let currentTabId: number | undefined;
+    let switchProblem = '';
+    const wanted = args.activate as number | undefined;
+    if (wanted !== undefined) {
+      const target = created[wanted - 1];
+      const failure =
+        target !== undefined && open.length === total
+          ? await runCommand({ action: 'tab.switch', target: { tabId: target } }, context)
+          : toolFailure('tab_not_found', 'That tab was not opened.');
+      if (failure || target === undefined) {
+        switchProblem = ` Could not switch to tab ${wanted}.`;
+      } else {
+        currentTabId = target;
+      }
+    }
+
+    if (open.length < total) {
+      const missing = total - open.length;
+      return {
+        ...toolFailure(
+          'batch_incomplete',
+          `Opened ${open.length} of ${total} ${noun}. ${missing} could not be opened${
+            attempted < total ? ', and the browser kept refusing, so the rest were not tried' : ''
+          }.${switchProblem} Not retried, to avoid duplicate tabs.`,
+          false,
+        ),
+        tabsCreated: open.length,
+      } as ToolResult;
+    }
+
+    return {
+      ok: true,
+      summary: `Opened ${open.length} of ${total} ${noun}.${
+        currentTabId === undefined && !switchProblem ? ' Your current tab was left in front.' : ''
+      }${currentTabId !== undefined ? ` Switched to tab ${wanted}.` : ''}${switchProblem}`,
+      tabsCreated: open.length,
+      ...(currentTabId !== undefined && { currentTabId, pageChanged: true }),
+      data: { requested: total, created: open.length, tabIds: open },
+    };
   }
 
   const READ_REQUESTS = new Set<ContentRequest['type']>([
@@ -973,7 +1171,31 @@ export function createToolService({
     };
 
     for (const step of steps) {
+      const last = calls.at(-1);
       switch (step.kind) {
+        case 'new_tabs':
+          calls.push({ name: 'open_tabs', arguments: { count: step.count } });
+          break;
+        case 'open_many':
+          calls.push({ name: 'open_tabs', arguments: { urls: step.urls } });
+          break;
+        case 'open_each': {
+          const count = last?.name === 'open_tabs' ? (last.arguments.count as number) : 0;
+          if (!last || count < 1) return null;
+          // An impossible size is left for the safety check to refuse, with its explanation.
+          if (count <= MAX_TABS_PER_REQUEST) {
+            last.arguments = { urls: Array.from({ length: count }, () => step.url) };
+          }
+          break;
+        }
+        case 'switch_created': {
+          if (last?.name !== 'open_tabs') return null;
+          const size = Array.isArray(last.arguments.urls)
+            ? last.arguments.urls.length
+            : (last.arguments.count as number);
+          last.arguments.activate = step.which === 'last' ? size : step.which;
+          break;
+        }
         case 'new_tab':
           calls.push({ name: 'open_tab', arguments: {} });
           inFreshTab = true;
@@ -1067,6 +1289,7 @@ export function createToolService({
     ) {
       return NAVIGATION_TOOL_TIMEOUT_MS;
     }
+    if (name === 'open_tabs') return BATCH_TOOL_TIMEOUT_MS;
     if (name === 'wait_for_element') {
       return (
         ((args.timeoutSeconds as number | undefined) ?? DEFAULT_WAIT_SECONDS) * 1000 +

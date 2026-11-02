@@ -30,7 +30,9 @@ export function validateNavigationUrl(input: string): UrlValidation {
   } else {
     const host = value.split(/[/:?#]/, 1)[0] ?? '';
     if (!looksLikeHost(host)) return { ok: false, reason: NOT_AN_ADDRESS };
-    candidate = `${host === 'localhost' ? 'http' : 'https'}://${value}`;
+    // This machine rarely has a certificate, and the address is not going anywhere else.
+    const isLocal = host === 'localhost' || /^127\.\d+\.\d+\.\d+$/.test(host);
+    candidate = `${isLocal ? 'http' : 'https'}://${value}`;
   }
 
   let parsed: URL;

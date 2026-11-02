@@ -18,7 +18,7 @@ type Tab = chrome.tabs.Tab;
 /** The browser APIs commands may use. Everything else is out of reach. */
 export interface BrowserApi {
   queryTabs(query: chrome.tabs.QueryInfo): Promise<Tab[]>;
-  createTab(properties: { url?: string }): Promise<Tab>;
+  createTab(properties: { url?: string; active?: boolean }): Promise<Tab>;
   getTab(tabId: number): Promise<Tab>;
   navigateTab(tabId: number, url: string): Promise<unknown>;
   activateTab(tabId: number): Promise<unknown>;

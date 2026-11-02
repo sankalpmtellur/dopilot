@@ -1,80 +1,92 @@
-# TASK 6 — Dopilot: Final Production Readiness Audit
+# TASK 7 — Fix Multi-Tab Creation and Batch Browser Commands
 
-Dopilot is already pushed to GitHub and working locally in Brave.
+## Problem
 
-Your task is to verify and prepare the complete project for production deployment. Do not deploy anything yet.
+Dopilot currently cannot reliably execute commands such as:
 
-## 1. Full Production Audit
+"Open 10 new tabs."
 
-- Review the complete monorepo.
-- Verify frontend, backend, extension, shared packages, MCP, and Groq integration.
-- Check production build compatibility.
-- Identify missing files, dependencies, environment variables, and configurations.
-- Fix actual deployment blockers without unnecessary rewrites.
+It handles individual tab operations correctly, but fails to execute multiple tab creations within a single instruction.
 
-## 2. Vercel Preparation
+## Requirements
 
-- Prepare `apps/web` for Vercel deployment from the existing GitHub monorepo.
-- Verify the correct root directory, install command, build command, and output settings.
-- Ensure production environment variables are documented.
-- Verify HTTPS website-to-extension communication.
-- Confirm the frontend does not require the Fastify backend.
+### 1. Fix Multi-Tab Creation
 
-## 3. Browser Extension Distribution
+Support natural-language commands such as:
 
-- Prepare a production Chrome/Brave extension build.
-- Verify Manifest V3 compatibility.
-- Verify extension icons, permissions, CSP, and production origins.
-- Ensure production extension IDs can be configured correctly.
-- Prepare an installable ZIP for manual distribution.
-- Verify the ZIP structure and document manual installation.
-- Do not publish to the Chrome Web Store.
+- "Open 10 new tabs."
+- "Create 5 blank tabs."
+- "Open YouTube, GitHub, and Wikipedia in separate tabs."
+- "Open 3 tabs and navigate each to Google."
+- "Create 10 tabs and switch to the last one."
 
-## 4. Security
+Ensure the requested number of tabs is created accurately.
 
-- Ensure API keys and credentials are never included in Git or production builds.
-- Audit extension permissions and website messaging.
-- Verify screenshot, microphone, and Groq privacy controls.
-- Check that development URLs are excluded from production.
-- Preserve all agent safety and approval restrictions.
-- Review third-party license and attribution obligations.
-- Identify information needed for a public privacy policy.
+### 2. Deterministic Execution
 
-## 5. Verification
+- Handle simple batch commands without calling Groq unnecessarily.
+- Extend the existing deterministic command parser.
+- Support numbers written as digits or words.
+- Use the existing validated browser-tool registry.
+- Track actual successful operations rather than assuming completion.
+- Prevent duplicate tabs caused by retries.
+- Preserve the current tab unless the user requests otherwise.
 
-Run:
+### 3. Agent Loop Improvements
 
-- `pnpm build`
-- `pnpm typecheck`
-- `pnpm lint`
-- `pnpm test`
-- `pnpm verify:extension`
-- `pnpm audit --prod`
+- Support batch operations within one user instruction.
+- Do not let the existing 15-action limit incorrectly block a safe batch operation.
+- Count each browser action toward a separate configurable batch limit.
+- Set a reasonable maximum of 20 new tabs per request.
+- Reject excessive or invalid requests with a clear explanation.
+- Allow users to cancel batch operations midway.
+- Handle individual tab-creation failures without falsely claiming success.
 
-Test the production website and extension builds against each other where possible.
+### 4. Performance
 
-Fix genuine failures.
+- Execute tab creation efficiently without overwhelming the browser.
+- Avoid unnecessary Groq API calls.
+- Prevent browser freezing during batch operations.
+- Display accurate progress, such as "Creating tab 6 of 10."
 
-## 6. Restrictions
+### 5. Testing
 
-- Do not deploy to Vercel or Render.
-- Do not purchase services.
-- Do not publish the extension.
-- Do not change the architecture unnecessarily.
+Test:
+
+1. Creating 1, 5, 10, and 20 tabs.
+2. Creating tabs using numbers written in words.
+3. Opening multiple different URLs.
+4. Creating tabs and switching to a requested tab.
+5. Cancelling halfway through a batch.
+6. Browser permission failures.
+7. Duplicate-request prevention.
+8. Chrome and Brave compatibility.
+9. Correct progress reporting.
+10. Existing single-tab functionality.
+
+Run all existing build, typecheck, lint, unit, and extension verification commands.
+
+Fix any regressions.
+
+## Restrictions
+
+- Preserve existing security and permission checks.
+- Do not weaken agent safety limits globally.
+- Do not introduce paid services.
+- Do not redesign the frontend.
 - Do not overwrite `note.txt`.
-- Do not create a separate Markdown report.
-- Do not commit or push without explicit permission.
+- Do not create separate Markdown reports.
+- Do not deploy automatically.
+- Do not commit or push without permission.
 
-## 7. Final Response
+## Expected Result
 
-Provide a concise summary covering:
+Dopilot must successfully execute:
 
-1. Production readiness: Pass/Fail.
-2. Any remaining blockers.
-3. Exact Vercel deployment settings.
-4. Whether Render is required.
-5. Extension ZIP location and installation method.
-6. Required production environment variables.
-7. Test results.
+**"Open 10 new tabs."**
 
-Prioritize identifying release blockers over cosmetic improvements.
+It should create exactly 10 tabs, show accurate progress, and report how many were actually created.
+
+Verify the result in real Chrome and Brave, not just mocked tests.
+
+Provide a concise summary of changes, tests, and any limitations.

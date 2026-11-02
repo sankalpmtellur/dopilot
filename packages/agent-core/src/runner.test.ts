@@ -6,7 +6,7 @@ import { DEFAULT_EXECUTION_LIMITS } from './limits.js';
 import { ModelError } from './model.js';
 import type { ModelMessage, ModelRequest, ModelResponse } from './model.js';
 import { AgentRunner } from './runner.js';
-import type { AgentRun, AgentToolbox, RunStore, ToolAssessment } from './runner.js';
+import type { AgentRun, AgentToolbox, RunStore, ToolAssessment, ToolContext } from './runner.js';
 import { wrapUntrustedContent } from './untrusted.js';
 
 type Scripted = ModelResponse | ModelError | ((request: ModelRequest) => Promise<ModelResponse>);
@@ -1654,5 +1654,233 @@ describe('trimming', () => {
     }));
     const size = (list: ModelMessage[]) => JSON.stringify(list).length;
     expect(size(trimMessages(messages, 2))).toBeLessThan(size(trimMessages(messages, 0)));
+  });
+});
+
+describe('batches', () => {
+  function batchSetup(
+    plan: { name: string; arguments: Record<string, unknown> }[] | null,
+    overrides: {
+      execute?: (
+        name: string,
+        args: Record<string, unknown>,
+        context: ToolContext,
+      ) => Promise<ToolResult>;
+      assess?: () => Promise<ToolAssessment>;
+      script?: ModelResponse[];
+      canUseModel?: boolean;
+      limits?: Partial<typeof DEFAULT_EXECUTION_LIMITS>;
+    } = {},
+  ) {
+    const store = memoryStore();
+    const script = [...(overrides.script ?? [])];
+    const complete = vi.fn(async () => script.shift() ?? done('Finished.'));
+    const execute = vi.fn(
+      overrides.execute ??
+        (async (_name: string, args: Record<string, unknown>, context: ToolContext) => {
+          const total = args.count as number;
+          for (let done = 1; done <= total; done += 1) {
+            context.onProgress?.({ done, total, label: `Creating tab ${done} of ${total}` });
+            await new Promise((resolve) => setTimeout(resolve, 1));
+          }
+          return {
+            ok: true as const,
+            summary: `Opened ${total} of ${total} new tabs.`,
+            tabsCreated: total,
+          };
+        }),
+    );
+    const labels: string[] = [];
+    const runner = new AgentRunner({
+      store,
+      limits: { ...DEFAULT_EXECUTION_LIMITS, ...overrides.limits },
+      canUseModel: async () => overrides.canUseModel ?? false,
+      model: async () => ({ complete }),
+      chooseModel: async () => 'm',
+      sleep: async () => undefined,
+      onChange: (run) => {
+        const running = run.timeline.find((entry) => entry.status === 'running');
+        if (running) labels.push(running.label);
+      },
+      toolbox: {
+        definitions: [],
+        assess: overrides.assess ?? (async () => ({ decision: 'allow' })),
+        execute,
+        describeContext: async () => ({ text: '', currentTabId: 1 }),
+        planSimple: async () => plan,
+      },
+    });
+    return { runner, store, execute, complete, labels };
+  }
+  const open = (count: number) => [{ name: 'open_tabs', arguments: { count } }];
+
+  it('runs with no AI, no key, and the true count', async () => {
+    const { runner, store, complete } = batchSetup(open(10));
+    expect(await runner.start('Open 10 new tabs.', 'panel')).toBeNull();
+    await runner.idle();
+    expect(complete).not.toHaveBeenCalled();
+    expect(store.run?.status).toBe('completed');
+    expect(store.run?.summary).toBe('Opened 10 of 10 new tabs.');
+    expect(store.run?.batchActions).toBe(10);
+  });
+
+  it('is not stopped by the action limit, which still applies to everything else', async () => {
+    const { runner, store } = batchSetup(open(20), { limits: { maxActions: 3 } });
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(store.run?.status).toBe('completed');
+    expect(store.run?.actionCount).toBe(0);
+    expect(store.run?.batchActions).toBe(20);
+  });
+
+  it('shows accurate progress as it goes', async () => {
+    const { runner, labels } = batchSetup(open(3));
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(labels).toEqual(
+      expect.arrayContaining(['Creating tab 1 of 3', 'Creating tab 2 of 3', 'Creating tab 3 of 3']),
+    );
+    expect(labels.filter((label) => label.startsWith('Creating'))).toEqual(
+      [...labels.filter((label) => label.startsWith('Creating'))].sort(),
+    );
+  });
+
+  it('holds a whole task to the batch limit, however the AI splits it up', async () => {
+    const { runner, store, execute } = batchSetup(null, {
+      canUseModel: true,
+      script: [
+        tools(call('open_tabs', { count: 15 })),
+        tools(call('open_tabs', { count: 10 })),
+        done('Only some could be opened, so I stopped.'),
+      ],
+    });
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.run?.batchActions).toBe(15);
+    expect(store.run?.timeline.at(-1)?.detail).toMatch(/at most 20/);
+  });
+
+  it('never runs the same batch twice in a task, so retries cannot double the tabs', async () => {
+    const { runner, store, execute } = batchSetup(null, {
+      canUseModel: true,
+      script: [
+        tools(call('open_tabs', { count: 5 })),
+        tools(call('open_tabs', { count: 5 })),
+        done('Opened five tabs.'),
+      ],
+    });
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.run?.batchActions).toBe(5);
+  });
+
+  it('reports a failed tab as a failure, with the real count, and does not retry or ask the AI', async () => {
+    const { runner, store, execute, complete } = batchSetup(open(5), {
+      canUseModel: true,
+      execute: async () => ({
+        ok: false,
+        code: 'batch_incomplete',
+        message: 'Opened 3 of 5 new tabs.',
+        recoverable: false,
+        tabsCreated: 3,
+      }),
+    });
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+    expect(store.run?.status).toBe('failed');
+    expect(store.run?.error).toBe('Opened 3 of 5 new tabs.');
+    expect(store.run?.batchActions).toBe(3);
+  });
+
+  it('says how many tabs exist when stopped halfway, and does nothing after', async () => {
+    let finishLate: () => void = () => undefined;
+    const { runner, store, execute } = batchSetup(open(10), {
+      execute: async (_name, _args, context) => {
+        for (let done = 1; done <= 6; done += 1) {
+          context.onProgress?.({ done, total: 10, label: `Creating tab ${done} of 10` });
+        }
+        await new Promise<void>((resolve) => {
+          finishLate = resolve;
+        });
+        // One tab that was already on its way when Stop arrived.
+        context.onProgress?.({ done: 7, total: 10, label: 'Creating tab 7 of 10' });
+        return { ok: false, code: 'cancelled', message: 'x', recoverable: false };
+      },
+    });
+    await runner.start('x', 'panel');
+    await vi.waitFor(() => expect(store.run?.batchActions).toBe(6));
+    await runner.stop();
+    expect(store.run?.status).toBe('cancelled');
+    expect(store.run?.summary).toContain('6 of 10');
+    finishLate();
+    await vi.waitFor(() => expect(store.run?.summary).toContain('7 of 10'));
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not redo a batch a restart interrupted', async () => {
+    const store = memoryStore();
+    const first = new AgentRunner({
+      store,
+      model: async () => ({ complete: async () => done('x') }),
+      chooseModel: async () => 'm',
+      toolbox: {
+        definitions: [],
+        assess: async () => ({ decision: 'allow' }),
+        execute: async (_name, _args, context) => {
+          context.onProgress?.({ done: 4, total: 10, label: 'Creating tab 5 of 10' });
+          return new Promise<ToolResult>(() => undefined);
+        },
+        describeContext: async () => ({ text: '', currentTabId: 1 }),
+        planSimple: async () => open(10),
+      },
+    });
+    await first.start('x', 'panel');
+    await vi.waitFor(() => expect(store.run?.batchActions).toBe(4));
+
+    const execute = vi.fn(async () => ({ ok: true as const, summary: 'x' }));
+    const complete = vi.fn(async () => done('x'));
+    const second = new AgentRunner({
+      store,
+      canUseModel: async () => true,
+      model: async () => ({ complete }),
+      chooseModel: async () => 'm',
+      toolbox: {
+        definitions: [],
+        assess: async () => ({ decision: 'allow' }),
+        execute,
+        describeContext: async () => ({ text: '', currentTabId: 1 }),
+      },
+    });
+    await second.resume();
+    await second.idle();
+    expect(execute).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(store.run?.status).toBe('failed');
+    expect(store.run?.error).toContain('4 of 10');
+  });
+
+  it('a refused plan step ends the plan, and never counts as success', async () => {
+    const { runner, store, execute } = batchSetup(
+      [
+        { name: 'open_tabs', arguments: { count: 50 } },
+        { name: 'scroll_page', arguments: { direction: 'down' } },
+      ],
+      {
+        assess: async () => ({
+          decision: 'block',
+          result: { ok: false, code: 'too_many_tabs', message: 'At most 20.', recoverable: false },
+        }),
+      },
+    );
+    await runner.start('x', 'panel');
+    await runner.idle();
+    expect(execute).not.toHaveBeenCalled();
+    expect(store.run?.status).toBe('failed');
+    expect(store.run?.error).toBe('At most 20.');
+    expect(store.run?.batchActions).toBe(0);
   });
 });

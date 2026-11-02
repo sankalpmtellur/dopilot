@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSimpleInstruction, siteSearchUrl } from './intent.js';
+import { parseCount, parseSimpleInstruction, siteSearchUrl } from './intent.js';
 
 const parse = parseSimpleInstruction;
 
@@ -101,4 +101,114 @@ describe('instructions simple enough to need no AI', () => {
   ])('leaves "%s" to the AI', (text) => {
     expect(parse(text)).toBeNull();
   });
+});
+
+describe('batches of tabs', () => {
+  it.each([
+    ['Open 10 new tabs.', 10],
+    ['open ten new tabs', 10],
+    ['Create 5 blank tabs.', 5],
+    ['create five empty tabs', 5],
+    ['Please open twenty tabs', 20],
+    ['open twenty-one tabs', 21],
+    ['make a dozen new tabs', 12],
+    ['open a couple of tabs', 2],
+    ['Open 3 more tabs', 3],
+    ['open 0 tabs', 0],
+    ['open 500 new tabs', 500],
+    ['open a thousand tabs', 1000],
+  ])('counts "%s" as %i', (text, count) => {
+    expect(parse(text)).toEqual([{ kind: 'new_tabs', count }]);
+  });
+
+  it('treats one tab as the ordinary single tab', () => {
+    expect(parse('open 1 new tab')).toEqual([{ kind: 'new_tab' }]);
+    expect(parse('open one new tab')).toEqual([{ kind: 'new_tab' }]);
+    expect(parse('open a new tab')).toEqual([{ kind: 'new_tab' }]);
+  });
+
+  it.each([
+    'Open YouTube, GitHub, and Wikipedia in separate tabs.',
+    'open youtube, github and wikipedia in different tabs',
+    'open tabs for YouTube, GitHub, Wikipedia',
+    'Open YouTube, GitHub and Wikipedia each in a new tab',
+  ])('opens a list from "%s"', (text) => {
+    expect(parse(text)).toEqual([
+      {
+        kind: 'open_many',
+        urls: ['https://www.youtube.com/', 'https://github.com/', 'https://www.wikipedia.org/'],
+      },
+    ]);
+  });
+
+  it('accepts addresses in a list, and leaves any uncertain one to the AI', () => {
+    expect(parse('open a.com and b.com in separate tabs')?.[0]).toMatchObject({
+      urls: ['https://a.com/', 'https://b.com/'],
+    });
+    expect(parse('open youtube and my bank in separate tabs')).toBeNull();
+    expect(parse('open javascript:alert(1) and github in separate tabs')).toBeNull();
+  });
+
+  it.each([
+    'Open 3 tabs and navigate each to Google.',
+    'open three tabs, then go to google in each',
+  ])('sends each tab somewhere for "%s"', (text) => {
+    expect(parse(text)).toEqual([
+      { kind: 'new_tabs', count: 3 },
+      { kind: 'open_each', url: 'https://www.google.com/' },
+    ]);
+  });
+
+  it.each([
+    ['Create 10 tabs and switch to the last one.', 'last'],
+    ['create ten tabs and switch to the last tab', 'last'],
+    ['open 5 tabs, then go to the third one', 3],
+    ['open 5 tabs and switch to the 2nd tab', 2],
+    ['open 5 tabs and switch to the first one', 1],
+  ])('switches within the batch for "%s"', (text, which) => {
+    expect(parse(text)?.[1]).toEqual({ kind: 'switch_created', which });
+  });
+
+  it('keeps ordinary meanings outside a batch', () => {
+    expect(parse('switch to the last tab')).toEqual([{ kind: 'switch_previous' }]);
+    expect(parse('open 5 tabs and switch to tab 2')?.[1]).toEqual({
+      kind: 'switch_position',
+      position: 2,
+    });
+    expect(parse('switch to the third one')).toEqual([{ kind: 'switch_named', name: 'third one' }]);
+    expect(parse('navigate each to google')).toBeNull();
+  });
+
+  it.each([
+    'open some tabs',
+    'open a few tabs',
+    'open many new tabs',
+    'open -3 tabs',
+    'open 2.5 tabs',
+    'open ten tabs and read them',
+  ])('leaves "%s" to the AI', (text) => {
+    expect(parse(text)).toBeNull();
+  });
+});
+
+describe('parseCount', () => {
+  it.each([
+    ['7', 7],
+    ['seven', 7],
+    ['Twenty', 20],
+    ['twenty five', 25],
+    ['twenty-five', 25],
+    ['ninety nine', 99],
+    ['a hundred', 100],
+    ['a million', 1000000],
+  ])('reads %s', (text, value) => {
+    expect(parseCount(text)).toBe(value);
+  });
+
+  it.each(['', 'ten ten', 'twenty ten', 'lots', 'a few', 'ten thousand tabs'])(
+    'does not guess at "%s"',
+    (text) => {
+      expect(parseCount(text)).toBeNull();
+    },
+  );
 });

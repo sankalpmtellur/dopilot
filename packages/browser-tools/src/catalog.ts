@@ -1,4 +1,4 @@
-import { ElementRefSchema, PressableKeySchema } from '@dopilot/shared';
+import { ElementRefSchema, MAX_TABS_PER_REQUEST, PressableKeySchema } from '@dopilot/shared';
 import type { ToolRisk } from '@dopilot/shared';
 import { z } from 'zod';
 
@@ -11,6 +11,11 @@ export interface BrowserToolDefinition<Input extends z.ZodObject = z.ZodObject> 
   effect: 'observe' | 'act';
   /** `vision` tools send a screenshot to the AI provider, which is limited per task. */
   cost?: 'vision';
+  /**
+   * How many browser actions this one call stands for. Such a call counts toward the separate
+   * batch limit, because it is one decision with one safety check, not many separate steps.
+   */
+  batchSize?: (args: Record<string, unknown>) => number;
   /** Still available over MCP, but offering it to the agent only invites a wasted step. */
   hiddenFromAgent?: boolean;
   input: Input;
@@ -80,6 +85,18 @@ export const BROWSER_TOOLS = [
     risk: 'interact',
     effect: 'act',
     input: z.strictObject({ url: address.optional() }),
+  }),
+  defineTool({
+    name: 'open_tabs',
+    description: `Open several new tabs at once, in the background, up to ${MAX_TABS_PER_REQUEST}. Give count for blank tabs, or urls for one tab per address (repeat one to open it several times). activate brings the tab at that 1-based position to the front. Reports how many really opened. Never repeat it.`,
+    risk: 'interact',
+    effect: 'act',
+    batchSize: ({ count, urls }) => (Array.isArray(urls) ? urls.length : Number(count) || 0),
+    input: z.strictObject({
+      count: z.number().int().optional(),
+      urls: z.array(address).optional(),
+      activate: z.number().int().min(1).optional(),
+    }),
   }),
   defineTool({
     name: 'navigate',
@@ -248,6 +265,12 @@ export function validateToolCall(name: string, args: unknown): ToolCallValidatio
     const given = [direction, target, text].filter((value) => value !== undefined).length;
     if (given !== 1) return { ok: false, error: 'Give exactly one of direction, ref or text.' };
   }
+  if (name === 'open_tabs') {
+    const { count, urls } = parsed.data as Record<string, unknown>;
+    if ((count === undefined) === (urls === undefined)) {
+      return { ok: false, error: 'Give either count or urls.' };
+    }
+  }
   if (name === 'wait_for_element') {
     const { text, role } = parsed.data as Record<string, unknown>;
     if (text === undefined && role === undefined) {
@@ -307,6 +330,7 @@ const LABELS: Record<string, (args: Record<string, unknown>) => string> = {
   get_visible_text: () => 'Reading visible text',
   get_interactive_elements: ({ query }) => (query ? `Looking for “${query}”` : 'Finding controls'),
   open_tab: ({ url }) => (url ? `Opening ${url}` : 'Opening a new tab'),
+  open_tabs: ({ count, urls }) => `Opening ${Array.isArray(urls) ? urls.length : count} new tabs`,
   navigate: ({ url }) => `Going to ${url}`,
   switch_tab: () => 'Switching tabs',
   close_tab: () => 'Closing a tab',

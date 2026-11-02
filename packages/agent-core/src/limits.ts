@@ -1,6 +1,8 @@
 export interface ExecutionLimits {
   /** Tools that change something. Reading a page does not count. */
   maxActions: number;
+  /** New tabs across a whole task. Separate, so a safe batch is not stopped by `maxActions`. */
+  maxBatchActions: number;
   maxDurationMs: number;
   maxConsecutiveFailures: number;
   /** The same call this many times running is treated as a loop. */
@@ -38,6 +40,7 @@ export interface ExecutionLimits {
 
 export const DEFAULT_EXECUTION_LIMITS: ExecutionLimits = {
   maxActions: 15,
+  maxBatchActions: 20,
   maxDurationMs: 5 * 60 * 1000,
   maxConsecutiveFailures: 3,
   maxIdenticalCalls: 3,

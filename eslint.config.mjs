@@ -5,7 +5,9 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/node_modules/**', '**/dist/**', '**/.next/**', '**/next-env.d.ts'] },
+  {
+    ignores: ['release/**', '**/node_modules/**', '**/dist/**', '**/.next/**', '**/next-env.d.ts'],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

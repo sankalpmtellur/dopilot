@@ -15,6 +15,7 @@ const REQUIRED = [
   'get_visible_text',
   'get_tabs',
   'open_tab',
+  'open_tabs',
   'navigate',
   'switch_tab',
   'close_tab',
@@ -102,5 +103,26 @@ describe('describeToolCall', () => {
     expect(describeToolCall('navigate', { url: 'https://a.com/x?token=secret' })).toBe(
       'Going to https://a.com/x',
     );
+  });
+});
+
+describe('open_tabs', () => {
+  it('needs exactly one of count or urls', () => {
+    expect(validateToolCall('open_tabs', {}).ok).toBe(false);
+    expect(validateToolCall('open_tabs', { count: 2, urls: ['a.com'] }).ok).toBe(false);
+    expect(validateToolCall('open_tabs', { count: 2 }).ok).toBe(true);
+    expect(validateToolCall('open_tabs', { urls: ['a.com'] }).ok).toBe(true);
+  });
+
+  it('refuses anything that is not a whole number', () => {
+    expect(validateToolCall('open_tabs', { count: 2.5 }).ok).toBe(false);
+    expect(validateToolCall('open_tabs', { count: '10' }).ok).toBe(false);
+    expect(validateToolCall('open_tabs', { count: 2, activate: 0 }).ok).toBe(false);
+  });
+
+  it('knows how many actions a call stands for', () => {
+    const tool = BROWSER_TOOLS.find((item) => item.name === 'open_tabs');
+    expect(tool?.batchSize?.({ count: 7 })).toBe(7);
+    expect(tool?.batchSize?.({ urls: ['a', 'b'] })).toBe(2);
   });
 });

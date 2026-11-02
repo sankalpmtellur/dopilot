@@ -69,6 +69,12 @@ export interface AgentRun extends AgentRunView {
   /** Why the plan stopped, if it did. */
   planFailure: { message: string; recoverable: boolean; kind: AgentFailureKind } | null;
   lastProgressAt: number;
+  /** New tabs this task has really created. */
+  batchActions: number;
+  /** A batch that has started, so Stop and restarts can say how far it really got. */
+  liveBatch: { done: number; total: number } | null;
+  /** Batches already started. A batch is never run twice, whoever asks. */
+  startedBatches: string[];
 }
 
 export interface ToolContext {
@@ -81,6 +87,8 @@ export interface ToolContext {
   instruction?: string;
   pageDataRead?: boolean;
   signal: AbortSignal;
+  /** For long tools: how far along they really are. */
+  onProgress?: (progress: { done: number; total: number; label: string }) => void;
 }
 
 export type ToolAssessment =
@@ -434,6 +442,9 @@ export class AgentRunner {
         planned: calls.length > 0,
         planFailure: null,
         lastProgressAt: startedAt,
+        batchActions: 0,
+        liveBatch: null,
+        startedBatches: [],
         metrics: { ...emptyMetrics(), deterministic: calls.length > 0 },
       };
       await this.persist();
@@ -448,9 +459,17 @@ export class AgentRunner {
   async stop(): Promise<void> {
     const run = await this.load();
     if (!run || !isAgentActive(run.status)) return;
-    this.finish(run, 'cancelled', { summary: 'Stopped. No further actions will run.' });
+    this.finish(run, 'cancelled', { summary: this.stoppedSummary(run) });
     this.active?.abort.abort();
     await this.persist();
+  }
+
+  /** Says what really happened, so a stopped batch does not leave the count to be guessed. */
+  private stoppedSummary(run: AgentRun): string {
+    const batch = run.liveBatch;
+    return batch
+      ? `Stopped after opening ${batch.done} of ${batch.total} tabs. No further actions will run.`
+      : 'Stopped. No further actions will run.';
   }
 
   async resolveApproval(id: string, approved: boolean): Promise<void> {
@@ -538,8 +557,19 @@ export class AgentRunner {
         entry.status = 'failed';
         entry.detail = 'Interrupted by the browser. Outcome unknown.';
       }
+      const batch = run.liveBatch;
+      run.liveBatch = null;
       // A plan cannot judge an unknown outcome, so whatever remains is not safe to run blind.
-      if (run.planned) this.abandonPlan(run, 'The browser interrupted that step.');
+      // A batch that was cut short must not be redone either, or its tabs would be doubled.
+      if (run.planned) {
+        this.abandonPlan(
+          run,
+          batch
+            ? `The browser interrupted this after opening ${batch.done} of ${batch.total} tabs.`
+            : 'The browser interrupted that step.',
+          !batch,
+        );
+      }
     }
     run.inflightCallId = null;
     await this.persist();
@@ -686,7 +716,7 @@ export class AgentRunner {
   }
 
   private abandonPlan(run: AgentRun, message: string, recoverable = true): void {
-    run.planFailure ??= { message, recoverable, kind: 'page' };
+    run.planFailure ??= { message, recoverable, kind: recoverable ? 'page' : 'blocked' };
     for (const skipped of run.pendingCalls.splice(0)) {
       this.pushToolResult(
         run,
@@ -932,7 +962,7 @@ export class AgentRunner {
     }
     if (!run.approvedKey) run.recentCalls = recordCallSignature(run.recentCalls, signature);
 
-    if (tool.effect === 'act' && run.actionCount >= this.limits.maxActions) {
+    if (tool.effect === 'act' && !tool.batchSize && run.actionCount >= this.limits.maxActions) {
       this.finish(
         run,
         'failed',
@@ -997,6 +1027,29 @@ export class AgentRunner {
       return;
     }
 
+    if (tool.batchSize) {
+      // After the safety check, which explains a single oversized request better.
+      const size = tool.batchSize(args);
+      const refusal = run.startedBatches.includes(signature)
+        ? toolFailure(
+            'batch_already_run',
+            'This batch was already run in this task, so it was not run again. Report the earlier result.',
+            false,
+          )
+        : run.batchActions + size > this.limits.maxBatchActions
+          ? toolFailure(
+              'batch_limit',
+              `A task can open at most ${this.limits.maxBatchActions} new tabs, and this one has already opened ${run.batchActions}. Nothing more was opened.`,
+              false,
+            )
+          : null;
+      if (refusal) {
+        this.addEntry(run, 'error', 'failed', label, this.resultDetail(refusal));
+        this.completeCall(run, call, refusal, false);
+        return;
+      }
+    }
+
     if (assessment.decision === 'approve' && assessment.key !== run.approvedKey) {
       this.pauseForApproval(run, assessment);
       return;
@@ -1011,7 +1064,12 @@ export class AgentRunner {
         : 'observe';
     const entry = this.addEntry(run, entryKind, 'running', label);
     if (tool.cost === 'vision') run.visionCalls += 1;
-    if (tool.effect === 'act') run.actionCount += 1;
+    if (tool.effect === 'act' && !tool.batchSize) run.actionCount += 1;
+    if (tool.batchSize) {
+      run.startedBatches.push(signature);
+      run.liveBatch = { done: 0, total: tool.batchSize(args) };
+    }
+    const batchBase = run.batchActions;
     run.inflightCallId = call.id;
     run.metrics.firstStepMs ??= this.now() - run.startedAt;
     await this.persist();
@@ -1025,7 +1083,18 @@ export class AgentRunner {
     let result: ToolResult;
     try {
       result = await bounded(
-        (stepSignal) => this.deps.toolbox.execute(tool.name, args, contextFor(stepSignal)),
+        (stepSignal) =>
+          this.deps.toolbox.execute(tool.name, args, {
+            ...contextFor(stepSignal),
+            onProgress: ({ done, total, label: progress }) => {
+              // Can arrive just after Stop, from a tab that was already on its way.
+              if (run.liveBatch) run.liveBatch = { done, total };
+              run.batchActions = batchBase + done;
+              if (isAgentActive(run.status)) entry.label = progress;
+              else if (run.status === 'cancelled') run.summary = this.stoppedSummary(run);
+              void this.persist().catch(() => undefined);
+            },
+          }),
         this.deps.toolbox.toolTimeoutMs?.(tool.name, args) ?? this.limits.toolTimeoutMs,
         signal,
       );
@@ -1056,6 +1125,11 @@ export class AgentRunner {
       return;
     }
 
+    if (tool.batchSize) {
+      entry.label = label;
+      run.liveBatch = null;
+    }
+    run.batchActions = batchBase + (result.tabsCreated ?? 0);
     entry.status = result.ok ? 'done' : 'failed';
     if (result.ok && CONTENT_TOOLS.has(tool.name)) run.readPageContent = true;
     if (result.ok && result.untrusted && tool.effect === 'observe') run.pageDataRead = true;
@@ -1075,13 +1149,8 @@ export class AgentRunner {
     const stalled = run.noEffectActions >= this.limits.maxIdenticalCalls;
     this.completeCall(run, call, result, (!result.ok && result.recoverable) || stalled);
 
-    if (run.planned && !result.ok) {
-      this.abandonPlan(run, result.message, result.recoverable);
-      return;
-    }
-
     // Later calls in this batch were planned against a page that may no longer exist.
-    if (result.ok && result.pageChanged && !run.planned) {
+    if (isAgentActive(run.status) && result.ok && result.pageChanged && !run.planned) {
       for (const skipped of run.pendingCalls.splice(0)) {
         this.pushToolResult(
           run,
@@ -1131,6 +1200,8 @@ export class AgentRunner {
   ): void {
     this.pushToolResult(run, call, result);
     run.pendingCalls.shift();
+    // However a planned step failed, including being refused, the rest was planned on it.
+    if (run.planned && !result.ok) this.abandonPlan(run, result.message, result.recoverable);
     if (countsAsFailure) {
       this.countFailure(run, result.ok ? '' : result.message);
     } else if (result.ok) {

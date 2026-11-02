@@ -42,6 +42,12 @@ const SITE_ALIASES: Record<string, string> = {
 
 export type SimpleStep =
   | { kind: 'new_tab' }
+  | { kind: 'new_tabs'; count: number }
+  | { kind: 'open_many'; urls: string[] }
+  /** Sends each tab from the batch just before it to this address. */
+  | { kind: 'open_each'; url: string }
+  /** A position in the batch just before it. */
+  | { kind: 'switch_created'; which: number | 'last' }
   /** `site` is set for a known site, so a following search can reuse the same page load. */
   | { kind: 'open'; url: string; newTab: boolean; site?: string }
   | { kind: 'search'; site: string | null; query: string }
@@ -56,6 +62,108 @@ export type SimpleStep =
   | { kind: 'close' };
 
 const MAX_STEPS = 5;
+/** Room for a list of addresses. Anything longer is not a simple instruction. */
+const MAX_PARSED_CHARS = 1000;
+
+const UNITS = [
+  'zero',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+  'eleven',
+  'twelve',
+  'thirteen',
+  'fourteen',
+  'fifteen',
+  'sixteen',
+  'seventeen',
+  'eighteen',
+  'nineteen',
+];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const ORDINALS = [
+  '',
+  'first',
+  'second',
+  'third',
+  'fourth',
+  'fifth',
+  'sixth',
+  'seventh',
+  'eighth',
+  'ninth',
+  'tenth',
+  'eleventh',
+  'twelfth',
+  'thirteenth',
+  'fourteenth',
+  'fifteenth',
+  'sixteenth',
+  'seventeenth',
+  'eighteenth',
+  'nineteenth',
+  'twentieth',
+];
+
+/** "10", "ten", "twenty-five", "a dozen", "a hundred". Null for anything less certain. */
+export function parseCount(raw: string): number | null {
+  const text = raw.trim().toLowerCase().replace(/-/g, ' ');
+  if (/^\d{1,9}$/.test(text)) return Number(text);
+  if (text === 'a couple' || text === 'a couple of' || text === 'couple of') return 2;
+  if (text === 'a dozen' || text === 'dozen') return 12;
+  const big = /^(?:a|an|one) (hundred|thousand|million)$/.exec(text)?.[1];
+  if (big) return { hundred: 100, thousand: 1000, million: 1_000_000 }[big] ?? null;
+  const unit = UNITS.indexOf(text);
+  if (unit !== -1) return unit;
+  const [tens = '', ones, extra] = text.split(' ');
+  const tensIndex = TENS.indexOf(tens);
+  if (tensIndex < 2 || extra !== undefined) return null;
+  if (ones === undefined) return tensIndex * 10;
+  const onesIndex = UNITS.indexOf(ones);
+  return onesIndex >= 1 && onesIndex <= 9 ? tensIndex * 10 + onesIndex : null;
+}
+
+function parsePosition(raw: string): number | 'last' | null {
+  const text = raw.trim().toLowerCase();
+  if (text === 'last' || text === 'final') return 'last';
+  const numeric = /^(\d{1,2})(?:st|nd|rd|th)?$/.exec(text)?.[1];
+  if (numeric) return Number(numeric) || null;
+  const ordinal = ORDINALS.indexOf(text);
+  return ordinal > 0 ? ordinal : null;
+}
+
+/** "YouTube, GitHub, and Wikipedia" as addresses, or null unless every one is certain. */
+function parseTargetList(raw: string): string[] | null {
+  const names = raw
+    .split(/\s*,\s*(?:and\s+)?|\s+and\s+/i)
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const urls: string[] = [];
+  for (const name of names) {
+    const target = resolveTarget(name);
+    if (!target) return null;
+    urls.push(target.url);
+  }
+  return urls.length > 0 ? urls : null;
+}
+
+/** Instructions that are one batch as a whole, so their commas do not separate steps. */
+function parseWholeBatch(text: string): SimpleStep | null {
+  const separate =
+    /^(?:open|launch|load|create)\s+(.+?)\s+(?:each\s+)?in\s+(?:a\s+)?(?:separate|different|individual|their own|new)\s+tabs?$/i.exec(
+      text,
+    )?.[1] ?? /^(?:open|create|make)\s+(?:new\s+)?tabs\s+for\s+(.+)$/i.exec(text)?.[1];
+  if (!separate) return null;
+  const urls = parseTargetList(separate);
+  return urls ? { kind: 'open_many', urls } : null;
+}
 
 function siteKey(raw: string): string | null {
   const name = raw
@@ -76,6 +184,43 @@ function resolveTarget(raw: string): { url: string; site?: string } | null {
   const validated = validateNavigationUrl(raw);
   return validated.ok ? { url: validated.url } : null;
 }
+
+function parseBatchClause(clause: string): SimpleStep | null {
+  const counted =
+    /^(?:open|create|make|start|add)(?: up)? (.+?)(?: more)?(?: new| blank| empty| fresh)* tabs?$/i.exec(
+      clause,
+    )?.[1];
+  if (counted) {
+    const count = parseCount(counted);
+    if (count === null) return null;
+    return count === 1 ? { kind: 'new_tab' } : { kind: 'new_tabs', count };
+  }
+
+  const each =
+    /^(?:navigate|point|send|go|load|open)(?: to)? (?:each|all|every one|each one|each of them|all of them|them all|them)(?: of them)?(?: to)? (.+)$/i.exec(
+      clause,
+    )?.[1] ??
+    /^(?:navigate to|go to|load|open) (.+?) in (?:each|all|every)(?: one| of them| tab)?$/i.exec(
+      clause,
+    )?.[1];
+  if (each) {
+    const target = resolveTarget(each);
+    return target ? { kind: 'open_each', url: target.url } : null;
+  }
+
+  const created =
+    /^(?:switch|go|move|jump)(?: back)? to (?:the )?(\w+)(?: one| tab| new tab| new one)?$/i.exec(
+      clause,
+    )?.[1];
+  if (created) {
+    const which = parsePosition(created);
+    if (which !== null) return { kind: 'switch_created', which };
+  }
+  return null;
+}
+
+const isBatch = (step: SimpleStep | undefined) =>
+  step?.kind === 'new_tabs' || step?.kind === 'open_many';
 
 function parseClause(clause: string): SimpleStep | null {
   if (/^(?:open|create|start|make)(?: up)?(?: a)?(?: new)? tab$/i.test(clause)) {
@@ -165,7 +310,10 @@ export function parseSimpleInstruction(input: string): SimpleStep[] | null {
     .replace(/^(?:hey |ok |okay )?(?:do ?pilot[, ]+)?/i, '')
     .replace(/^(?:please |can you |could you |would you |i want you to )+/i, '')
     .replace(/ please$/i, '');
-  if (!text || text.length > 200) return null;
+  if (!text || text.length > MAX_PARSED_CHARS) return null;
+
+  const whole = parseWholeBatch(text);
+  if (whole) return [whole];
 
   const clauses = text
     .split(/\s*[,;]\s*(?:and\s+)?(?:then\s+)?|\s+and\s+then\s+|\s+then\s+|\s+and\s+/i)
@@ -175,7 +323,11 @@ export function parseSimpleInstruction(input: string): SimpleStep[] | null {
 
   const steps: SimpleStep[] = [];
   for (const clause of clauses) {
-    const step = parseClause(clause);
+    // Batches read differently after one: "the last tab" means the last of those just opened.
+    const batch = parseBatchClause(clause);
+    const follows = isBatch(steps.at(-1));
+    const needsBatch = batch?.kind === 'open_each' || batch?.kind === 'switch_created';
+    const step = batch && (!needsBatch || follows) ? batch : parseClause(clause);
     if (!step) return null;
     steps.push(step);
   }

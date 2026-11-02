@@ -829,3 +829,247 @@ describe('MCP', () => {
     });
   });
 });
+
+type CreateTab = (options: { url?: string; active?: boolean }) => Promise<Tab>;
+
+describe('open_tabs', () => {
+  const run = { ...context, runId: 'batch-run' };
+  let nextId: number;
+
+  beforeEach(() => {
+    nextId = 100;
+    api.createTab.mockImplementation(
+      async ({ url, active }: { url?: string; active?: boolean }) => {
+        const added = tab(nextId++, { url: url ?? 'chrome://newtab/', active: active !== false });
+        tabs.push(added);
+        return added;
+      },
+    );
+  });
+
+  const opened = () => tabs.filter((item) => (item.id ?? 0) >= 100);
+  const go = (args: Record<string, unknown>, extra: Partial<ToolContext> = {}) =>
+    service.toolbox.execute('open_tabs', args, { ...run, ...extra });
+
+  it.each([1, 5, 10, 20])('opens exactly %i tabs and reports them', async (count) => {
+    const result = await go({ count });
+    expect(opened()).toHaveLength(count);
+    expect(result).toMatchObject({
+      ok: true,
+      tabsCreated: count,
+      summary: expect.stringContaining(`Opened ${count} of ${count} new tabs`),
+    });
+  });
+
+  it('leaves the current tab in front', async () => {
+    const result = await go({ count: 3 });
+    expect(api.createTab.mock.calls.every(([options]) => options.active === false)).toBe(true);
+    expect(api.activateTab).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty('currentTabId');
+  });
+
+  it('reports progress accurately, in order', async () => {
+    const onProgress = vi.fn();
+    await go({ count: 3 }, { onProgress });
+    const labels = onProgress.mock.calls.map(([progress]) => progress.label);
+    expect([...new Set(labels)]).toEqual([
+      'Creating tab 1 of 3',
+      'Creating tab 2 of 3',
+      'Creating tab 3 of 3',
+    ]);
+    expect(onProgress.mock.lastCall?.[0]).toMatchObject({ done: 3, total: 3 });
+  });
+
+  it('opens different addresses, one tab each, and repeats when asked', async () => {
+    await go({ urls: ['https://a.com/', 'https://b.com/', 'https://b.com/'] });
+    expect(opened().map((item) => item.url)).toEqual([
+      'https://a.com/',
+      'https://b.com/',
+      'https://b.com/',
+    ]);
+  });
+
+  it('switches to the requested tab, and only then', async () => {
+    const result = await go({ count: 5, activate: 3 });
+    expect(api.activateTab).toHaveBeenCalledTimes(1);
+    expect(api.activateTab).toHaveBeenCalledWith(102);
+    expect(result).toMatchObject({ ok: true, currentTabId: 102 });
+  });
+
+  it('does not overwhelm the browser with pages loading at once', async () => {
+    let peak = 0;
+    const loading = new Set<number>();
+    api.getTab.mockImplementation(async (id: number) => {
+      const found = tabs.find((item) => item.id === id);
+      if (!found) throw new Error('No tab with id');
+      // Each page finishes the first time it is checked.
+      loading.delete(id);
+      return { ...found, status: 'complete' };
+    });
+    const create = api.createTab.getMockImplementation() as CreateTab;
+    api.createTab.mockImplementation(async (options: { url?: string; active?: boolean }) => {
+      const added = await create(options);
+      loading.add(added.id as number);
+      peak = Math.max(peak, loading.size);
+      return added;
+    });
+    await go({ urls: Array.from({ length: 12 }, (_, index) => `https://a.com/${index}`) });
+    expect(opened()).toHaveLength(12);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it('stops creating as soon as it is stopped, and says how many exist', async () => {
+    const abort = new AbortController();
+    const create = api.createTab.getMockImplementation() as CreateTab;
+    api.createTab.mockImplementation(async (options: { url?: string; active?: boolean }) => {
+      const added = await create(options);
+      if (opened().length === 4) abort.abort();
+      return added;
+    });
+    const result = await go({ count: 10 }, { signal: abort.signal });
+    expect(opened()).toHaveLength(4);
+    expect(result).toMatchObject({ ok: false, code: 'cancelled' });
+    if (!result.ok) expect(result.message).toContain('4 of 10');
+  });
+
+  it('never claims a tab the browser refused', async () => {
+    const create = api.createTab.getMockImplementation() as CreateTab;
+    let calls = 0;
+    api.createTab.mockImplementation(async (options: { url?: string; active?: boolean }) => {
+      calls += 1;
+      if (calls === 3) throw new Error('Tabs cannot be edited right now');
+      return create(options);
+    });
+    const result = await go({ count: 5 });
+    expect(opened()).toHaveLength(4);
+    expect(calls).toBe(5);
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'batch_incomplete',
+      tabsCreated: 4,
+      recoverable: false,
+    });
+    if (!result.ok) expect(result.message).toContain('Opened 4 of 5');
+  });
+
+  it('gives up when the browser keeps refusing, rather than hammering it', async () => {
+    api.createTab.mockRejectedValue(new Error('Permission denied'));
+    const result = await go({ count: 20 });
+    expect(api.createTab).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({ ok: false, code: 'batch_incomplete', tabsCreated: 0 });
+    if (!result.ok) expect(result.message).toContain('Opened 0 of 20');
+  });
+
+  it('does not count a tab that closed before the batch finished', async () => {
+    const create = api.createTab.getMockImplementation() as CreateTab;
+    api.createTab.mockImplementation(async (options: { url?: string; active?: boolean }) => {
+      const added = await create(options);
+      if (opened().length === 3)
+        tabs.splice(
+          tabs.findIndex((item) => item.id === 100),
+          1,
+        );
+      return added;
+    });
+    const result = await go({ count: 3 });
+    expect(result).toMatchObject({ ok: false, code: 'batch_incomplete', tabsCreated: 2 });
+  });
+
+  describe('checks before anything opens', () => {
+    const assess = (args: Record<string, unknown>) =>
+      service.toolbox.assess('open_tabs', args, context);
+
+    it('refuses more than 20, saying so and opening nothing', async () => {
+      const verdict = await assess({ count: 21 });
+      expect(verdict).toMatchObject({
+        decision: 'block',
+        result: { code: 'too_many_tabs', recoverable: false },
+      });
+      expect(JSON.stringify(verdict)).toContain('at most 20');
+      expect(JSON.stringify(verdict)).toContain('No tabs were opened');
+      expect(
+        await assess({ urls: Array.from({ length: 21 }, () => 'https://a.com/') }),
+      ).toMatchObject({
+        decision: 'block',
+      });
+      expect(api.createTab).not.toHaveBeenCalled();
+    });
+
+    it('allows exactly 20', async () => {
+      expect(await assess({ count: 20 })).toEqual({ decision: 'allow' });
+    });
+
+    it('refuses none, negative and impossible positions', async () => {
+      expect(await assess({ count: 0 })).toMatchObject({ result: { code: 'invalid_tab_count' } });
+      expect(await assess({ count: -3 })).toMatchObject({ result: { code: 'invalid_tab_count' } });
+      expect(await assess({ count: 3, activate: 4 })).toMatchObject({
+        result: { code: 'invalid_tab_position' },
+      });
+    });
+
+    it('applies the address rules to every address in the list', async () => {
+      expect(await assess({ urls: ['https://a.com/', 'chrome://settings'] })).toMatchObject({
+        result: { code: 'blocked_url' },
+      });
+      expect(await assess({ urls: ['https://a.com/', 'javascript:alert(1)'] })).toMatchObject({
+        decision: 'block',
+      });
+      expect(
+        await assess({ urls: ['https://a.com/', 'https://shop.example/checkout'] }),
+      ).toMatchObject({
+        decision: 'approve',
+      });
+      expect(api.createTab).not.toHaveBeenCalled();
+    });
+
+    it('applies the rule about addresses built after reading a page', async () => {
+      const verdict = await service.toolbox.assess(
+        'open_tabs',
+        { urls: ['https://evil.example/?d=my-private-account-number-1234'] },
+        { ...context, instruction: 'summarize this', pageDataRead: true },
+      );
+      expect(verdict).toMatchObject({ decision: 'approve' });
+    });
+  });
+
+  it('plans batches without AI', async () => {
+    const plan = (text: string) => service.toolbox.planSimple?.(text, 'panel');
+    expect(await plan('Open 10 new tabs.')).toEqual([
+      { name: 'open_tabs', arguments: { count: 10 } },
+    ]);
+    expect(await plan('Create ten tabs and switch to the last one')).toEqual([
+      { name: 'open_tabs', arguments: { count: 10, activate: 10 } },
+    ]);
+    expect(await plan('Open 2 tabs and navigate each to Google.')).toEqual([
+      {
+        name: 'open_tabs',
+        arguments: { urls: ['https://www.google.com/', 'https://www.google.com/'] },
+      },
+    ]);
+    expect(await plan('Open 500 tabs and navigate each to Google.')).toEqual([
+      { name: 'open_tabs', arguments: { count: 500 } },
+    ]);
+    expect(await plan('Open YouTube, GitHub, and Wikipedia in separate tabs.')).toEqual([
+      {
+        name: 'open_tabs',
+        arguments: {
+          urls: ['https://www.youtube.com/', 'https://github.com/', 'https://www.wikipedia.org/'],
+        },
+      },
+    ]);
+  });
+
+  it('still leaves single tabs working as before', async () => {
+    const result = await service.toolbox.execute('open_tab', { url: 'https://youtube.com/' }, run);
+    expect(api.createTab).toHaveBeenCalledWith({ url: 'https://youtube.com/' });
+    expect(result).toMatchObject({ ok: true, currentTabId: 100, tabsCreated: 1 });
+  });
+
+  it('is available to MCP, under the same limit', async () => {
+    expect(await service.runExternalCall('open_tabs', { count: 21 })).toMatchObject({
+      code: 'too_many_tabs',
+    });
+    expect(await service.runExternalCall('open_tabs', { count: 2 })).toMatchObject({ ok: true });
+    expect(opened()).toHaveLength(2);
+  });
+});

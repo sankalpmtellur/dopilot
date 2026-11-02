@@ -85,3 +85,17 @@ describe('sanitizeTabTitle', () => {
     expect(sanitizeTabTitle('Inbox', undefined)).toBe('Inbox');
   });
 });
+
+describe('addresses on this machine', () => {
+  it('use http when no scheme was given, like localhost', () => {
+    expect(validateNavigationUrl('127.0.0.1:3000/x')).toEqual({
+      ok: true,
+      url: 'http://127.0.0.1:3000/x',
+    });
+    expect(validateNavigationUrl('localhost:3000')).toEqual({
+      ok: true,
+      url: 'http://localhost:3000/',
+    });
+    expect(validateNavigationUrl('192.168.1.1')).toEqual({ ok: true, url: 'https://192.168.1.1/' });
+  });
+});

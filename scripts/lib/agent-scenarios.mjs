@@ -56,6 +56,9 @@ export function startFixtures() {
             `<h1>Controls</h1><input aria-label="Name" /><select aria-label="Colour"><option>Red</option><option>Blue</option></select><button id="open" onclick="document.getElementById('m').hidden=false">Open dialog</button><div id="m" hidden role="dialog"><button onclick="this.parentElement.remove();document.title='Dialog closed'">Close dialog</button></div><div id="late"></div><script>setTimeout(()=>{const b=document.createElement('button');b.textContent='Late';document.getElementById('late').append(b)},600)</script>`,
           ),
         );
+      case '/slow':
+        // Slow enough to stop a batch partway through, as a real site might be.
+        return setTimeout(() => send(page('Slow', '<h1>Slow page</h1>')), 1500);
       case '/github':
         return send(page('GitHub fixture repo', '<h1>Repository</h1>'));
       case '/form':
@@ -936,7 +939,7 @@ export async function verifyAgent(name, executable, extensionPath) {
     mcpProcess = client;
 
     const { tools: listed } = await client.listTools();
-    check('MCP lists every browser tool', listed.length === 24, `${listed.length} tools`);
+    check('MCP lists every browser tool', listed.length === 25, `${listed.length} tools`);
 
     const parse = (result) => JSON.parse(result.content[0].text);
     const offline = parse(await client.callTool({ name: 'get_tabs', arguments: {} }));

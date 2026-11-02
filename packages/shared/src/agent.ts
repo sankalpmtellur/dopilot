@@ -28,6 +28,8 @@ export const ToolResultSchema = z.discriminatedUnion('ok', [
     currentTabId: z.number().int().nonnegative().optional(),
     /** The action ran but nothing visibly happened, which is not yet progress. */
     noEffect: z.boolean().optional(),
+    /** New tabs this really created, whatever was asked for. */
+    tabsCreated: z.number().int().nonnegative().optional(),
   }),
   z.strictObject({
     ok: z.literal(false),
@@ -39,6 +41,8 @@ export const ToolResultSchema = z.discriminatedUnion('ok', [
     stopTask: z.boolean().optional(),
     /** The message quotes the webpage, so it must be treated as data too. */
     untrusted: z.boolean().optional(),
+    /** New tabs this really created before it failed. */
+    tabsCreated: z.number().int().nonnegative().optional(),
   }),
 ]);
 export type ToolResult = z.infer<typeof ToolResultSchema>;
@@ -166,6 +170,9 @@ export const AgentRunViewSchema = z.object({
   metrics: AgentMetricsSchema.optional(),
 });
 export type AgentRunView = z.infer<typeof AgentRunViewSchema>;
+
+/** New tabs one instruction may open. More than this is a mistake more often than a wish. */
+export const MAX_TABS_PER_REQUEST = 20;
 
 export const MAX_INSTRUCTION_LENGTH = 2000;
 export const AgentInstructionSchema = z.string().trim().min(1).max(MAX_INSTRUCTION_LENGTH);
