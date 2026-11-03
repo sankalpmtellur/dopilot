@@ -3,8 +3,9 @@
 Open-source, voice-controlled AI browser agent for Chrome and Brave. Users bring
 their own Groq API key.
 
-> **Status:** the AI agent works: tell it what to do and it observes pages, acts through
-> validated tools, understands speech and screenshots, and asks before anything sensitive.
+> **Status:** version 1.0.0, not yet published. Tell it what to do and it observes pages, acts through
+> validated tools, understands speech and screenshots, and asks before actions that look consequential.
+> See [CHANGELOG.md](CHANGELOG.md) and [the privacy policy](docs/privacy-policy.md).
 
 ## Requirements
 
@@ -34,8 +35,8 @@ Health checks: `GET http://127.0.0.1:4000/health` and `GET http://localhost:3000
 1. Run `pnpm build`, or `pnpm dev:extension`.
 2. Open `chrome://extensions` or `brave://extensions` and turn on **Developer mode**.
 3. Choose **Load unpacked** and select `apps/extension/dist`.
-4. Click the Dopilot toolbar icon to open the side panel.
-5. Open http://localhost:3000. The website finds the extension by itself.
+4. Click the Dopilot toolbar icon to open the side panel. That is all the extension needs.
+5. Optional, for local development only: open http://localhost:3000. The website finds the extension by itself.
 
 ## Using the agent
 
@@ -91,6 +92,7 @@ pnpm test
 pnpm format:check
 pnpm build
 pnpm verify:extension  # needs pnpm dev:web running; drives real Chrome and Brave with throwaway profiles, with Groq stubbed
+pnpm release:extension && pnpm verify:package  # builds the store ZIP, then checks it and runs it in both browsers
 pnpm audit --prod
 ```
 
@@ -190,4 +192,8 @@ packages/mcp-tools  MCP v2 adapter for the tool catalog
 packages/ui         React components and theme shared by the website and extension
 ```
 
-See [docs/architecture.md](docs/architecture.md) for boundaries and the security model.
+See [docs/architecture.md](docs/architecture.md) for boundaries and the security model, and
+[docs/chrome-web-store.md](docs/chrome-web-store.md) for publishing.
+
+Keep your working copy out of folders that sync files, such as a Desktop folder in iCloud Drive. Sync can
+slow builds down and leave copies like `background 2.js` in the build, which `pnpm release:extension` refuses.

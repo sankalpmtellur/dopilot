@@ -1,6 +1,6 @@
 {
   "name": "dopilot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Open-source, voice-controlled AI browser agent for Chrome and Brave.",
   "license": "MIT",
@@ -24,6 +24,7 @@
     "verify:extension": "node scripts/verify-extension.mjs",
     "release:extension": "node scripts/release-extension.mjs",
     "verify:production": "node scripts/verify-production.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
     "notices": "node scripts/third-party-notices.mjs",
     "mcp": "pnpm --silent --filter @dopilot/backend mcp"
   },

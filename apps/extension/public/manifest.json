@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Dopilot",
-  "version": "0.1.0",
-  "description": "Open-source, voice-controlled AI browser agent.",
+  "version": "1.0.0",
+  "description": "Tell your browser what to do. An open-source AI agent for tabs and pages, using your own Groq key.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtrtTpPFi37uM48axdZADyL3I6Le4uJXjDEFfGN97Zsgsn3rnTaXpwWg68gWa2fuiyH0aXgzIMiKDYzmD4S/S2bdCng0AAE/KHIA3J5YE60d2Tfasn3tc+RtrHNa8b+YVDwpDPBtl51c4P5sQ1P/jT4r61YYldzX9n+CdwVQXDWlnvJLvIEdJ80sRccn5PLo4zNwEaeM1NoxeYeqkbpE7sp/ZTgNCMXcGKMfdCbTM8xzFbkAkhqA73KS6H15kc2uLcMViP8CfD9Y83cOUapItLdUvB06kHgXT0V87Dx89BfFFJjBFLHjyo0N9YL+/F8hApXOW0yd7kq/XcSD4qyVDgwIDAQAB",
   "minimum_chrome_version": "121",
   "permissions": ["activeTab", "alarms", "scripting", "sidePanel", "storage"],

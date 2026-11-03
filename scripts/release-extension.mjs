@@ -60,7 +60,10 @@ if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(['https://api.g
 for (const file of files(dist)) {
   const name = file.slice(dist.length + 1);
   if (name.endsWith('.map')) problems.push(`Source map in the build: ${name}`);
-  if (/ \d+\.|\.pem$|\.env/.test(name)) problems.push(`Stray file in the build: ${name}`);
+  // File sync, such as iCloud on the Desktop folder, can leave copies called "background 2.js".
+  if (/ \d+(\.|\/|$)|\.pem$|\.env/.test(name)) {
+    problems.push(`Stray file in the build, which file sync can cause: ${name}`);
+  }
   if (!/\.(js|html|css|json)$/.test(name)) continue;
   const text = readFileSync(file, 'utf8');
   if (/gsk_[A-Za-z0-9]{20,}/.test(text)) problems.push(`Something like a Groq key in ${name}`);

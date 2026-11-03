@@ -1382,7 +1382,8 @@ export class AgentRunner {
         {
           summary: 'Stopped the task',
           ok: false,
-          detail: outcome.summary ?? 'Stopped.',
+          // A tab already on its way can still arrive, so a count here could turn out wrong.
+          detail: run.liveBatch ? 'Stopped while opening tabs.' : 'Stopped.',
           via: run.planned ? 'instruction' : 'ai',
         },
         run,
