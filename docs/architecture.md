@@ -49,8 +49,9 @@ Requests carry unique IDs, and the website applies timeouts and can cancel.
 
 The manifest's `key` is a public key that pins the extension ID, so the website can find
 unpacked installs. Its private key was discarded. A release build (`pnpm release:extension`)
-takes the website's origin as a setting, writes it to both the manifest and
-`ALLOWED_WEB_ORIGINS`, and removes `key` and every development origin. The store assigns its
+trusts no website by default and leaves out `externally_connectable`. Given a website's origin,
+it writes that to both the manifest and `ALLOWED_WEB_ORIGINS`. Either way it removes `key` and every
+development origin. The store assigns its
 own ID, which goes in the website's `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`. See the README.
 
 A task may not use a tab showing Dopilot's website. Those tabs are recognized by address, or
@@ -99,7 +100,10 @@ collects from the live page, never from anything the model reports. It covers pu
 messages, account changes, deletions, uploads and form submissions, except searches. Keys that
 activate a control, and links that lead to the same places, get the same rules as clicks. The
 check runs again after approval, so a page that changed needs fresh approval, and one approval
-covers one action. Answers are accepted only from extension pages.
+covers one action. A batch of addresses is checked as a whole: the prompt lists every flagged address and the
+answer covers exactly that list. Labels are matched in common languages, and structure counts too: answering
+a dialog, buttons in forms with secret fields, buttons on payment pages and unlabelled controls in those
+places all ask first. This reduces risk but is not complete. Answers are accepted only from extension pages.
 
 **Always refused.** Typing into password, card or code fields, solving CAPTCHAs, submitting graded
 quizzes or assessments, and using internal browser pages. Reading a quiz question is allowed.
@@ -109,11 +113,14 @@ results are wrapped as untrusted data, and the system prompt says only the user 
 but that cannot fully prevent injection. The real limits are the closed tool list, per-site
 permissions and approvals, all enforced by code the model cannot influence, so a fully fooled model
 still cannot act without the user. Unusually long addresses need approval, since they could carry
-page data to another site. Field values are never read, and card numbers and tokens are removed from
-page text before it reaches the model.
+page data to another site. Once page data has reached the model, including through an earlier answer in the
+conversation, any address on another site carrying something the user did not type needs approval, even on
+a site the user named. Earlier answers are also marked as untrusted. Field values are never read, and card
+numbers and tokens are removed from page text before it reaches the model.
 
-**Runaway runs.** Each task is limited to 15 actions, 5 minutes, 3 failures in a row and 30 AI
-requests. Repeated calls are refused, and the Stop button aborts immediately.
+**Runaway runs.** Each task is limited to 15 actions, 20 new tabs, 5 minutes and 3 failures in a row, plus
+AI requests and tokens that the user can set in settings. Repeating an action that changes nothing, or fails,
+is refused. Repeating one that keeps working is allowed up to 10 times. Stop aborts immediately.
 
 **Logs.** The backend redacts credential headers and `apiKey` fields. It has no
 Groq key setting.
@@ -146,7 +153,7 @@ is ignored. Messages to pages have time limits too, so a frozen page costs secon
   block the next task.
 - **One copy of a run.** All entry points share a single loaded run, because a worker woken by Stop also
   resumes, and separate copies would let Stop end one while the other kept acting.
-- **A watchdog alarm** wakes the worker every 30 seconds to end unanswered approvals after 5 minutes,
+- **A watchdog alarm** runs only during a task, and wakes the worker every 30 seconds to end unanswered approvals after 5 minutes,
   pick up a run whose worker died, and end a loop with no progress for 2 minutes.
 - **Progress, not call counts.** Looking at a page again after an action worked is progress. Repeating the
   same look, actions that change nothing, and a task that keeps failing in different ways all end it.

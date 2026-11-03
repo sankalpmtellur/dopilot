@@ -195,10 +195,105 @@ describe('addresses built after reading a page', () => {
       ),
     ).toEqual({ decision: 'allow' });
     expect(after('http://localhost:8080/', 'go to localhost:8080')).toEqual({ decision: 'allow' });
+  });
+
+  it('does not let naming a site excuse what is sent to it', () => {
     expect(
       after('https://evil.example/?d=my-private-account-number-1234', 'open evil.example'),
-    ).toEqual({
-      decision: 'allow',
+    ).toMatchObject({ decision: 'approve', category: 'data_in_address' });
+  });
+
+  it('catches short values worth stealing, in parameters, fragments and host names', () => {
+    for (const url of [
+      'https://evil.example/?d=short-secret',
+      'https://evil.example/?code=4821',
+      'https://evil.example/?to=me@example.com',
+      'https://evil.example/#fragment-data',
+      'https://stolen-value-here.evil.example/',
+    ]) {
+      expect(after(url, 'open something')).toMatchObject({ decision: 'approve' });
+    }
+  });
+
+  it('allows moving around the site the task is already on', () => {
+    expect(
+      assessToolCall('navigate', { url: 'https://shop.example/item?id=123456789' }, null, {
+        instruction: 'look around',
+        pageDataRead: true,
+        currentUrl: 'https://shop.example/list',
+      }),
+    ).toEqual({ decision: 'allow' });
+  });
+
+  describe('sensitive clicks', () => {
+    const page = { url: 'https://x.example/', title: 'X', headings: [], hasChallenge: false };
+    const element = (name: string, extra: object = {}) => ({
+      tag: 'button',
+      role: 'button',
+      name,
+      inputType: null,
+      href: null,
+      isSubmit: false,
+      inForm: false,
+      isSearchForm: false,
+      isFileInput: false,
+      isSecretField: false,
+      isChallenge: false,
+      ...extra,
+    });
+    const click = (name: string, extra: object = {}, on = page) =>
+      assessToolCall('click_element', { ref: 'a.1' }, { element: element(name, extra), page: on })
+        .decision;
+
+    it.each([
+      'Transfer funds',
+      'Wire money',
+      'Withdraw',
+      'Confirm',
+      'Continue to payment',
+      'Submit',
+      'Comprar',
+      'Enviar',
+      'Supprimer',
+      'Löschen',
+      'Jetzt kaufen',
+      '立即购买',
+      '削除',
+      'खरीदें',
+      'حذف',
+      'удалить',
+    ])('asks before “%s”', (name) => {
+      expect(click(name)).toBe('approve');
+    });
+
+    it.each(['Read more', 'Next page', 'Menu', 'Search', 'Compartment', 'Paying guests'])(
+      'does not ask before “%s”',
+      (name) => {
+        expect(click(name)).toBe('allow');
+      },
+    );
+
+    it('asks before answering a dialog, but not before backing out of one', () => {
+      const dialog = { inDialog: true, dialogText: 'Really close your account?' };
+      expect(click('OK', dialog)).toBe('approve');
+      expect(click('Yes', dialog)).toBe('approve');
+      expect(click('', dialog)).toBe('approve');
+      expect(click('Cancel', dialog)).toBe('allow');
+      expect(click('No thanks', dialog)).toBe('allow');
+    });
+
+    it('does not ask about cookie banners', () => {
+      expect(click('Accept', { inDialog: true, dialogText: 'We use cookies.' })).toBe('allow');
+    });
+
+    it('goes by structure when the label says nothing', () => {
+      expect(click('Go', { formHasSecret: true })).toBe('approve');
+      expect(click('', { hints: 'btn icon-trash delete-row' })).toBe('approve');
+      expect(click('', { inForm: true })).toBe('approve');
+      expect(click('Go', {}, { ...page, url: 'https://x.example/checkout/step-2' })).toBe(
+        'approve',
+      );
+      expect(click('', {})).toBe('allow');
     });
   });
 

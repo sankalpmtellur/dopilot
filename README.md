@@ -39,23 +39,27 @@ Health checks: `GET http://127.0.0.1:4000/health` and `GET http://localhost:3000
 
 ## Using the agent
 
-Add your Groq API key under Settings in the side panel, then type what you want:
+The side panel opens with a short setup guide and example instructions. Add your Groq API key there or
+under Settings, then type what you want:
 
 - `Open Wikipedia and search for artificial intelligence, then scroll to the history section`
 - `Switch to my GitHub tab`
 - `Read the question displayed on this page`
 
 Dopilot shows each step, and you can stop it at any time. It asks before using a new site and
-before anything sensitive, such as sending, buying or deleting. It will not enter passwords, solve
-CAPTCHAs or submit graded quizzes. Choose a model in Settings, or leave it on Automatic.
+before actions that look consequential, such as sending, buying, deleting or answering a dialog. It goes
+by labels in common languages and by the page's structure, which cannot catch everything, so keep an eye
+on tasks on sites that matter. It will not enter passwords, solve CAPTCHAs or submit graded quizzes.
+Choose a model and per-task AI limits in Settings.
 
 Exact commands run instantly, without AI or a key. Type `help` to list them: `new tab`,
 `open <address>`, `list tabs`, `switch to tab <n>`, `reload`, `go back`, `go forward`, `close tab`,
 `close tab <n>`.
 
-Simple instructions such as `Open a new tab and go to YouTube` or `Switch to GitHub, then return to the
-previous tab` run straight away with no AI request, and need no key. Anything else goes to the AI. Both
-pass the same permission and safety checks.
+Simple instructions such as `Open 10 new tabs`, `Open YouTube, then open GitHub`, `Scroll down 5 times` or
+`Switch to GitHub, then return to the previous tab` run straight away with no AI request, and need no key.
+Finding a tab by name needs the optional tab details permission, which Dopilot asks for when needed; `switch
+to tab 2` never does. Anything else goes to the AI. Both pass the same permission and safety checks.
 
 ## Voice and vision
 
@@ -113,18 +117,20 @@ Import the GitHub repository, with these project settings. `apps/web/vercel.json
 No environment variables are needed for the manual ZIP, and no Groq key or other secret belongs on Vercel. Two
 optional ones exist, both public and fixed at build time, so redeploy after changing one:
 
-| Environment variable                                            | Value                                                              |
-| --------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`                             | A store listing's ID. Defaults to the manual ZIP's pinned ID.      |
-| `NEXT_PUBLIC_DOPILOT_EXTENSION_DOWNLOAD_URL`                    | Where visitors get the ZIP. Defaults to the latest GitHub release. |
-| Vercel serves HTTPS, which browsers need for microphone access. |
+| Environment variable                         | Value                                                              |
+| -------------------------------------------- | ------------------------------------------------------------------ |
+| `NEXT_PUBLIC_DOPILOT_EXTENSION_IDS`          | A store listing's ID. Defaults to the manual ZIP's pinned ID.      |
+| `NEXT_PUBLIC_DOPILOT_EXTENSION_DOWNLOAD_URL` | Where visitors get the ZIP. Defaults to the latest GitHub release. |
+
+Vercel serves HTTPS, which browsers need for microphone access.
 
 Only the origin the extension was built for can connect, so preview deployments show "Extension not connected".
 Browsers do not allow a wildcard on `vercel.app`.
 
 ### Extension (manual ZIP)
 
-Build it for the website's final origin. This stops if anything development-only is left in, and uploads nothing:
+By default a release build stands alone and trusts no website: `pnpm release:extension`. To connect the website,
+build for its final origin. Either way this stops if anything development-only is left in, and uploads nothing:
 
 ```bash
 DOPILOT_WEB_ORIGIN=https://dopilot.vercel.app DOPILOT_KEEP_KEY=1 pnpm release:extension

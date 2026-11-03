@@ -1,92 +1,316 @@
-# TASK 7 — Fix Multi-Tab Creation and Batch Browser Commands
+# Codex Task — DoPilot Extension: Reliability, Security, UX & Presentation Readiness
 
-## Problem
+## Objective
 
-Dopilot currently cannot reliably execute commands such as:
+Make **DoPilot** a reliable, secure, polished AI-powered browser extension ready for a live presentation.
 
-"Open 10 new tabs."
+Use the detailed audit in `note.txt` as the primary reference. The audit covers commit `f94cabf` and identifies bugs B1–B7, security issues S1–S3, and limitations L1–L5.
 
-It handles individual tab operations correctly, but fails to execute multiple tab creations within a single instruction.
+This is a comprehensive implementation task. Fix the relevant issues end-to-end, preserve existing functionality, and verify your changes.
 
-## Requirements
+**Critical restriction: Do not delete existing files, folders, packages, applications, or working features. The previous cleanup caused substantial data loss.**
 
-### 1. Fix Multi-Tab Creation
+## 1. Fix Critical Functional Bugs
 
-Support natural-language commands such as:
+### B1 — Multi-site instructions
+- Fix `planSimple` so consecutive website-opening commands aren't overwritten.
+- "Open YouTube, then open GitHub" must open both sites.
+- "Open a new tab and go to YouTube" must still open exactly one tab.
+- Support combinations of opening, navigating, and switching tabs.
+- Report the actual completed actions accurately.
 
-- "Open 10 new tabs."
-- "Create 5 blank tabs."
-- "Open YouTube, GitHub, and Wikipedia in separate tabs."
-- "Open 3 tabs and navigate each to Google."
-- "Create 10 tabs and switch to the last one."
+### B4 — Repetitive action handling
+- Fix the repetition guard so legitimate repeated actions are allowed.
+- Commands like scrolling five times, pressing Tab repeatedly, or reloading three times must not fail merely because they're repeated.
+- Preserve safeguards against genuinely stuck or infinite loops.
 
-Ensure the requested number of tabs is created accurately.
+### B5/B6 — Command reliability
+- Fix the `"go to 3"` parsing conflict.
+- Improve switching to existing tabs without requiring an AI call.
+- Explain when optional tab permissions are needed.
+- Never silently fall back to AI when a deterministic command can be handled locally.
+- Make error messages understandable to ordinary users.
 
-### 2. Deterministic Execution
+## 2. Strengthen Security
 
-- Handle simple batch commands without calling Groq unnecessarily.
-- Extend the existing deterministic command parser.
-- Support numbers written as digits or words.
-- Use the existing validated browser-tool registry.
-- Track actual successful operations rather than assuming completion.
-- Prevent duplicate tabs caused by retries.
-- Preserve the current tab unless the user requests otherwise.
+### B2 — URL approval
+- Evaluate every URL in a batch before execution.
+- Display all flagged URLs in the approval prompt.
+- Bind approvals to the exact proposed action and complete URL list.
+- Reject changed or previously unapproved batches.
+- Prevent partial approvals from authorizing additional sensitive actions.
 
-### 3. Agent Loop Improvements
+### B3 — Sensitive browser actions
+Improve detection of potentially consequential actions, including:
+- Payments and transfers.
+- Purchases and checkout.
+- Account deletion and logout.
+- Form submission.
+- Confirmation dialogs.
+- Unlabelled sensitive controls.
+- Common non-English action labels.
 
-- Support batch operations within one user instruction.
-- Do not let the existing 15-action limit incorrectly block a safe batch operation.
-- Count each browser action toward a separate configurable batch limit.
-- Set a reasonable maximum of 20 new tabs per request.
-- Reject excessive or invalid requests with a clear explanation.
-- Allow users to cancel batch operations midway.
-- Handle individual tab-creation failures without falsely claiming success.
+Do not depend exclusively on keyword matching.
 
-### 4. Performance
+Require explicit user confirmation before consequential or ambiguous actions. Avoid repeated prompts for harmless actions when safe to do so.
 
-- Execute tab creation efficiently without overwhelming the browser.
-- Avoid unnecessary Groq API calls.
-- Prevent browser freezing during batch operations.
-- Display accurate progress, such as "Creating tab 6 of 10."
+### S2/S3 — Prompt-injection protection
+- Treat webpage content and previous page-derived results as untrusted input.
+- Prevent sensitive data from being embedded in external URLs without explicit authorization.
+- Do not allow user-mentioned domains to automatically bypass exfiltration checks.
+- Preserve the existing tool validation and permission boundaries.
+- Add targeted tests for prompt injection and data leakage.
 
-### 5. Testing
+### S1 — Website connection
+DoPilot is now extension-first.
 
-Test:
+Remove unnecessary trust in `localhost:3000` from production extension builds.
 
-1. Creating 1, 5, 10, and 20 tabs.
-2. Creating tabs using numbers written in words.
-3. Opening multiple different URLs.
-4. Creating tabs and switching to a requested tab.
-5. Cancelling halfway through a batch.
-6. Browser permission failures.
-7. Duplicate-request prevention.
-8. Chrome and Brave compatibility.
-9. Correct progress reporting.
-10. Existing single-tab functionality.
+Keep `apps/web`, `apps/backend`, and their existing code intact. Do not remove these applications during this task.
 
-Run all existing build, typecheck, lint, unit, and extension verification commands.
+## 3. Improve Extension UI/UX
 
-Fix any regressions.
+Make the existing side panel more useful, modern, and polished.
 
-## Restrictions
+### First-run onboarding
+- Welcome screen explaining DoPilot.
+- Simple setup instructions.
+- Groq API key configuration.
+- Test connection button.
+- Permission explanations.
+- Example commands users can try.
 
-- Preserve existing security and permission checks.
-- Do not weaken agent safety limits globally.
-- Do not introduce paid services.
-- Do not redesign the frontend.
-- Do not overwrite `note.txt`.
-- Do not create separate Markdown reports.
-- Do not deploy automatically.
-- Do not commit or push without permission.
+### Main interface
+- Improve chat layout and spacing.
+- Display live action execution.
+- Show individual completed, pending, and failed steps.
+- Provide useful explanations when actions fail.
+- Add a Clear Conversation button.
+- Add direct links to settings when configuration is missing.
+- Preserve dark and light modes.
 
-## Expected Result
+### Activity history
+- Record deterministic and AI-driven actions.
+- Show meaningful summaries, timestamps, and results.
+- Keep activity counts accurate.
+- Ensure the history survives normal panel closing within the intended browser-session lifecycle.
 
-Dopilot must successfully execute:
+### User controls
+- Keep Stop prominently available during execution.
+- Make approval prompts clear and actionable.
+- Show meaningful task limits and progress.
+- Never claim a task succeeded when actions were skipped or failed.
 
-**"Open 10 new tabs."**
+Use the existing design system. Do not unnecessarily rewrite the entire frontend.
 
-It should create exactly 10 tabs, show accurate progress, and report how many were actually created.
+## 4. Improve AI Execution
 
-Verify the result in real Chrome and Brave, not just mocked tests.
+Preserve the existing Groq integration and `ModelClient` architecture.
 
-Provide a concise summary of changes, tests, and any limitations.
+- Verify current model discovery and selection.
+- Improve recovery from invalid tool calls.
+- Handle provider errors, rate limits, and unavailable models gracefully.
+- Introduce a configurable per-task token/request budget.
+- Display useful AI usage information where accurate data is available.
+- Avoid unnecessary AI calls for simple browser commands.
+- Improve handling of multi-step instructions and tool execution.
+
+Do not introduce additional AI providers during this task.
+
+Existing voice and vision functionality must remain intact.
+
+## 5. Browser Reliability
+
+Improve the extension's handling of:
+- Multiple tabs and navigation.
+- Slowly loading webpages.
+- Dynamic DOM changes.
+- Elements that disappear or become unavailable.
+- Content script injection failures.
+- Service worker restarts.
+- Interrupted or cancelled tasks.
+- Long-running operations.
+
+Do not introduce broad new permissions without a clear justification.
+
+Handle unsupported pages honestly instead of reporting false success.
+
+## 6. Testing and Verification
+
+Add regression coverage for all relevant audit findings.
+
+Run:
+- `pnpm typecheck`
+- `pnpm lint`
+- `pnpm format:check`
+- `pnpm test`
+- `pnpm build`
+- `pnpm audit --prod`
+- `pnpm verify:extension` in Chrome and Brave
+
+Additionally:
+- Test the actual docked side panel in visible Brave if browser access is available.
+- Test toolbar interactions and extension shortcuts.
+- Verify first-run onboarding.
+- Test multiple real websites.
+- Test stop, retry, and approval workflows.
+- Investigate and fix the intermittent verification timing race.
+
+### Live AI testing
+
+You may use my configured Groq API key for a few deliberate, low-cost smoke tests.
+
+Do not expose, print, or commit credentials.
+
+Do not use large-scale automated AI testing or consume substantial API credits.
+
+If the existing key is unavailable, report that limitation rather than inventing a successful result.
+
+## 7. Presentation Preparation
+
+Prepare DoPilot for a convincing working demonstration.
+
+Implement a small set of built-in example prompts covering:
+- Opening and organizing multiple tabs.
+- Reading and summarizing webpage content.
+- Navigating between websites.
+- Performing a multi-step browser task.
+- Demonstrating a sensitive-action approval.
+
+Examples should use existing functionality and must not falsely imply capabilities that aren't implemented.
+
+Provide a reproducible demonstration checklist containing tested commands and their expected results.
+
+Do not create a fake AI execution mode that appears to be real.
+
+## 8. Preserve Project Integrity
+
+Follow these rules strictly:
+
+1. Do not delete existing folders, files, or packages.
+2. Do not remove the website or backend.
+3. Do not rewrite unrelated modules.
+4. Do not replace existing architecture unnecessarily.
+5. Preserve all working browser commands, voice features, vision capabilities, and AI integration.
+6. Maintain backward compatibility wherever practical.
+7. Make targeted changes with regression tests.
+8. Do not perform destructive Git operations.
+9. Do not deploy or publish a release.
+10. Keep all work on the existing `main` branch.
+
+## 9. Completion Requirements
+
+The task is complete only when:
+- Critical functional and approval bugs are fixed.
+- Security protections are improved.
+- Side panel UX is functional and polished.
+- Existing features continue to work.
+- Automated verification passes.
+- Browser-level testing is documented accurately.
+- The extension is demonstrably more reliable than the audited version.
+
+If an issue cannot be resolved, document it explicitly. Never report an untested capability as verified.
+
+## 10. Final Report
+
+Update the existing root `note.txt` with:
+- Features and bugs fixed.
+- Security changes.
+- UI/UX improvements.
+- Test results.
+- Real browser and Groq testing outcomes.
+- Remaining limitations.
+- Recommended next development priorities.
+
+Do not create separate Markdown reports.
+
+Provide a concise final response covering implementation, verification, unresolved issues, and Git status.
+
+**Primary goal: Make DoPilot a dependable, impressive browser extension that performs real actions, not merely an AI chat interface.**
+
+
+================================================================================
+FINAL REPORT (2 Nov 2026). Nothing is committed. All work is uncommitted on main.
+================================================================================
+STATUS: Code is complete, but the final two-browser verification was stopped early because the session
+had to close. Treat DoPilot as not fully verified until step 1 of "Do this next" passes.
+
+Final run at the moment it was stopped: 239 passed, 0 failed, last section reached: Brave: Chrome/156.0.8078.80
+
+
+The original audit report was replaced when this file was edited and was never committed. Short version:
+B1 sites dropped from "open X, then open Y". B2 one approval covered a whole URL batch. B3 sensitive clicks
+missed approval. B4 third identical action refused. B5 "go to 3" and tab names needed AI. B6 confusing
+messages and empty activity list. B7 download link leads to an empty Releases page. S1 trust in
+localhost:3000. S2 short data could leave in URLs. S3 earlier answers treated as trusted. L1 no Clear button.
+L2 synthetic input. L3 screenshot could be lost during approval. L4 worker woken forever. L5 key not encrypted.
+
+FIXED
+- B1: each open keeps its own tab; "open a new tab and go to X" still makes one tab; "Open X and Y" needs no AI.
+- B4: repeats are allowed while they make progress. Actions with no effect are refused at the 3rd try. Working
+  ones stop at 10 per task, within the 15-action limit. "Scroll down 5 times", "reload twice", "press tab 3
+  times" need no AI. Tab now really moves focus.
+- B5/B6: "go to 3" and "switch to the third tab" work. Hidden tab names now ask for the tab permission and
+  explain why. Messages are written for people. Plans list what was skipped and what was already done.
+
+SECURITY
+- B2: every URL is checked first, all flagged URLs are shown, and the approval covers that exact list.
+- B3: more money words, confirm/submit, 10+ languages, plus structure checks: dialogs, forms with secret fields,
+  payment pages, unlabelled controls. Still not complete, so the README now says so.
+- S2/S3: naming a site no longer excuses data sent to it. Short emails, codes and numbers are caught. Earlier
+  answers are marked untrusted, and opening a page counts as reading it.
+- S1: a release build trusts no website unless DOPILOT_WEB_ORIGIN is set. Development builds still trust
+  localhost:3000. apps/web and apps/backend are untouched apart from one web test fixture.
+
+UI/UX AND AI
+- Welcome screen with key setup, Test button, permission explanations and 5 demo prompts.
+- Live pending, done, failed and skipped steps. AI usage while running. Clear conversation. Open settings links.
+- Activity log covers commands, plans and AI actions, with result, source and time, for the browser session.
+- Settings has per-task AI request and token limits. Text-written tool calls recover better.
+- Watchdog runs only during tasks (L4). Worker stays awake during screenshot approvals (L3).
+- Verification race fixed in the test script. No fake AI mode was added.
+
+TEST RESULTS
+- On the final code: typecheck, lint, format check, build, audit (no known vulnerabilities): PASS.
+  Unit tests: 879 of 879 PASS. Release build: PASS, zip made locally in release/ (ignored, not uploaded).
+- pnpm verify:extension, previous full run, with one small code change since: Chrome no failures. Brave 4
+  FAILED in reliability during a machine stall (Groq outage message, frozen page, "twelve" and "dozen" tabs).
+  Brave reliability alone then passed 43 of 43. Probably load, NOT proven.
+- Real sites, real docked panel, headless Brave 156, throwaway profile, no key, sites pre-allowed:
+  YouTube + GitHub 2 tabs, Wikipedia search and scroll, scroll x3, Tab x3, reload x3, switch to GitHub,
+  approval decline and allow, Stop (8 of 20, really 8), Clear, Open settings link: all worked. This run was
+  before the small fix that removes the approval reason from the summary.
+
+NOT VERIFIED
+- Live Groq: NOT RUN. No key was available to this session (no env var or .env). Nothing AI has run for real.
+  Public Groq docs do list llama-3.3-70b-versatile, but that is not a live test.
+- Real toolbar click and Alt+Shift+D. The panel was opened through the browser's API instead.
+- Visible-window tests: inconclusive. Tabs changed in those windows without my scripts doing it, most likely
+  someone clicking in them. Real permission dialogs, real microphone, logged-in sites.
+- "Try again" button on a live failure; the final live runs in Brave and Chrome did not happen.
+
+REMAINING LIMITATIONS
+- Keyword and structure checks can still miss sensitive actions. Synthetic input may be ignored by some sites.
+  No iframe support. Key is stored unencrypted. B7 remains: no GitHub release exists (publishing was out of scope).
+
+DO THIS NEXT
+1. Run: pnpm build, then pnpm dev:web, and in another terminal pnpm verify:extension (about 10+ minutes).
+   Keep the machine otherwise idle. Do not click in test windows.
+2. Add your Groq key in the panel and run the two AI items in the checklist below.
+3. Test the toolbar icon and Alt+Shift+D by hand, then review and commit.
+Next priorities: more real-site testing, CI, a published release.
+
+DEMO CHECKLIST (load apps/extension/dist unpacked; open a normal website first)
+Tested without AI, on real sites unless noted:
+ 1. Open YouTube, then open GitHub -> 2 new tabs, reports both.
+ 2. Open 10 new tabs -> exactly 10, current tab stays in front. (Tested earlier version, stubbed run.)
+ 3. Switch to GitHub -> GitHub in front. Asks for tab permission first if not yet allowed (prompt untested).
+ 4. Open Wikipedia and search for artificial intelligence, then scroll to the history section -> article, at
+    History. Asks for site access first (prompt untested).
+ 5. Scroll down 3 times -> 3 scrolls, no error.
+ 6. Please open example.com/checkout -> approval prompt. Decline: nothing opens. Allow: it opens.
+ 7. Open 20 new tabs, press Stop -> reports the true count.
+NOT yet tested for real, needs your key:
+ 8. Summarize this page -> a summary of the current page.
+ 9. Go to Wikipedia, find the article about Alan Turing, and tell me when he was born -> steps shown, then answer.
+Rehearse 8 and 9 before presenting. If Groq fails on stage, use items 1 to 7, which need no AI.

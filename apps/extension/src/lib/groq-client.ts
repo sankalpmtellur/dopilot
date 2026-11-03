@@ -56,17 +56,52 @@ const noParallelSetting = new Set<string>();
  */
 export function salvageToolCall(text: string | null | undefined): ToolCall | null {
   if (!text) return null;
-  const match = /<function=([a-zA-Z_]+)[\s>]*(\{[\s\S]*?\})\s*(?:>|<\/function>|$)/.exec(
-    text.trim(),
-  );
-  if (!match?.[1] || !match[2]) return null;
-  try {
-    const parsed: unknown = JSON.parse(match[2]);
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    return { id: `salvaged_${crypto.randomUUID()}`, name: match[1], arguments: parsed };
-  } catch {
+  const trimmed = text.trim();
+  const named = /<function=([a-zA-Z_]+)[\s>]*/.exec(trimmed);
+  if (named?.[1]) {
+    const args = firstJsonObject(trimmed.slice(named.index + named[0].length));
+    return args ? { id: `salvaged_${crypto.randomUUID()}`, name: named[1], arguments: args } : null;
+  }
+  // Some models write the whole call as JSON instead of using the interface.
+  if (!trimmed.startsWith('{')) return null;
+  const whole = firstJsonObject(trimmed) as { name?: unknown; arguments?: unknown } | null;
+  if (typeof whole?.name !== 'string' || typeof whole.arguments !== 'object' || !whole.arguments) {
     return null;
   }
+  return {
+    id: `salvaged_${crypto.randomUUID()}`,
+    name: whole.name,
+    arguments: whole.arguments,
+  };
+}
+
+/** The first complete object, counting braces, because arguments can themselves be nested. */
+function firstJsonObject(text: string): object | null {
+  if (!text.startsWith('{')) return null;
+  let depth = 0;
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (char === '\\') index += 1;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed: unknown = JSON.parse(text.slice(0, index + 1));
+          return typeof parsed === 'object' && parsed !== null ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /** History must hold valid arguments, or Groq rejects every later request in the task. */

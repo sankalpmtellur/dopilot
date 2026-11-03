@@ -31,6 +31,8 @@ const MAX_HISTORY_CHARS = 400;
 export interface ConversationTurn {
   instruction: string;
   outcome: string;
+  /** False only when no webpage could have shaped this outcome. */
+  untrusted?: boolean;
 }
 
 function clip(text: string, max: number): string {
@@ -59,6 +61,7 @@ export function addConversationTurn(
     {
       instruction: clip(turn.instruction, MAX_HISTORY_CHARS),
       outcome: clip(turn.outcome, MAX_HISTORY_CHARS),
+      ...(turn.untrusted !== undefined && { untrusted: turn.untrusted }),
     },
   ].slice(-MAX_HISTORY_TURNS);
 }
@@ -71,7 +74,11 @@ export function buildInitialMessages(
   const messages: ModelMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
   for (const turn of history) {
     messages.push({ role: 'user', content: turn.instruction });
-    messages.push({ role: 'assistant', content: turn.outcome });
+    // An earlier answer can quote a page, so it must not read as Dopilot's own words.
+    messages.push({
+      role: 'assistant',
+      content: turn.untrusted === false ? turn.outcome : wrapUntrustedContent(turn.outcome),
+    });
   }
   messages.push({ role: 'user', content: `${browserContext}\n\nInstruction: ${instruction}` });
   return messages;

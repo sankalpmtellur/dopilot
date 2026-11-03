@@ -38,6 +38,9 @@ export const PreferencesSchema = z.strictObject({
   voiceEngine: VoiceEngineChoiceSchema,
   /** Whether another model may stand in when the selected one is unavailable. */
   modelFallback: z.boolean().default(true),
+  /** Spending limits for one task. Optional, so older saved settings stay valid. */
+  maxTaskRequests: z.number().int().min(1).max(30).default(30),
+  maxTaskTokens: z.number().int().min(1000).max(500_000).default(60_000),
 });
 export type Preferences = z.infer<typeof PreferencesSchema>;
 
@@ -46,6 +49,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   speechFallback: false,
   voiceEngine: 'auto',
   modelFallback: true,
+  maxTaskRequests: 30,
+  maxTaskTokens: 60_000,
 };
 
 export type VoiceEngine = 'browser' | 'groq' | 'none';

@@ -85,6 +85,8 @@ export const ActionLogEntrySchema = z.strictObject({
   summary: z.string(),
   ok: z.boolean(),
   detail: z.string(),
+  /** How it ran: an exact command, an instruction needing no AI, or the AI. */
+  via: z.enum(['command', 'instruction', 'ai']).optional(),
 });
 export type ActionLogEntry = z.infer<typeof ActionLogEntrySchema>;
 

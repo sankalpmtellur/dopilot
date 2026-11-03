@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { PROTOCOL_VERSION } from '@dopilot/shared';
+import { DEFAULT_PREFERENCES, PROTOCOL_VERSION } from '@dopilot/shared';
 import type { ExtensionState } from '@dopilot/shared';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
@@ -28,7 +28,7 @@ const state: ExtensionState = {
     speechModels: [],
   },
   agent: null,
-  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true },
+  preferences: DEFAULT_PREFERENCES,
   recentActions: [],
 };
 

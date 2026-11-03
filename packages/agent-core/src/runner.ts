@@ -69,6 +69,11 @@ export interface AgentRun extends AgentRunView {
   /** Why the plan stopped, if it did. */
   planFailure: { message: string; recoverable: boolean; kind: AgentFailureKind } | null;
   lastProgressAt: number;
+  /** How often each action has run, so one that keeps working still cannot run forever. */
+  actionRepeats?: Record<string, number>;
+  /** The user's limits for this task, fixed when it starts. */
+  modelCallLimit?: number;
+  tokenLimit?: number;
   /** New tabs this task has really created. */
   batchActions: number;
   /** A batch that has started, so Stop and restarts can say how far it really got. */
@@ -156,8 +161,19 @@ export interface AgentRunnerDeps {
   /** Told when an approval starts or ends, so the host can show extension-owned UI. */
   onApproval?: (approval: AgentApproval | null, run: AgentRun) => void;
   onChange?: (run: AgentRun) => void;
+  /** Told about each action that ran, for the activity history. */
+  onAction?: (action: AgentActionRecord, run: AgentRun) => void;
+  /** The user's spending limits for a new task. */
+  budget?: () => Promise<{ maxModelCalls: number; maxTaskTokens: number }>;
   /** Told about key or model problems found while running. */
   onModelProblem?: (kind: ModelError['kind'], model: string | null) => void;
+}
+
+export interface AgentActionRecord {
+  summary: string;
+  ok: boolean;
+  detail: string;
+  via: 'instruction' | 'ai';
 }
 
 /** `notice` tells the user something they would want to know, such as a substitute model. */
@@ -179,6 +195,28 @@ const CLAIMS_ACTION =
 const ADMITS_FAILURE =
   /\b(can(no|')t|could ?n[o']t|unable|failed|did ?n[o']t|was ?n[o']t|not|nothing)\b/i;
 const LEAKED_CALL = /<\/?function\b|<tool_call>|^\s*\{\s*"(name|tool|function)"\s*:/i;
+
+/**
+ * Tool failures are written for the model and can mention tools and refs. The user sees these
+ * instead. The model still gets the original, because that is what it can act on.
+ */
+const USER_MESSAGES: Record<string, string> = {
+  repeated_action: 'That step kept repeating without changing anything, so Dopilot stopped.',
+  stale_ref: 'The page changed before that could be done.',
+  invalid_arguments: 'The AI suggested an action Dopilot could not accept, so it was not done.',
+  restricted_page:
+    'Dopilot can’t use internal browser pages or blank tabs. Open a website and try again.',
+  outcome_unknown: 'That may or may not have worked. Check the page before trying again.',
+  interrupted: 'The browser restarted Dopilot during that step, so its outcome is unknown.',
+  page_busy: 'The page didn’t respond. It may be busy, or showing a dialog.',
+  no_page_access: 'Dopilot doesn’t have permission to use this site. You can allow it when asked.',
+  batch_already_run: 'That batch had already run, so it was not run again.',
+  skipped: 'Skipped because an earlier step did not work.',
+};
+
+function userMessage(result: ToolResult): string {
+  return result.ok ? result.summary : (USER_MESSAGES[result.code] ?? result.message);
+}
 
 class StepTimeout extends Error {}
 class StepCancelled extends Error {}
@@ -293,6 +331,19 @@ export function toRunView(run: AgentRun): AgentRunView {
     error: run.error,
     failureKind: run.failureKind ?? null,
     metrics: run.metrics,
+    pendingSteps: run.pendingCalls
+      .filter((call) => call.id !== run.inflightCallId)
+      .map((call) =>
+        describeToolCall(
+          call.name,
+          typeof call.arguments === 'object' && call.arguments !== null
+            ? (call.arguments as Record<string, unknown>)
+            : {},
+        ),
+      ),
+    ...(run.modelCallLimit !== undefined && { modelRequestLimit: run.modelCallLimit }),
+    ...(run.tokenLimit !== undefined && { tokenLimit: run.tokenLimit }),
+    tabsOpened: run.batchActions,
   };
 }
 
@@ -376,6 +427,7 @@ export class AgentRunner {
         return 'The browser didn’t respond, so the task was not started. Try again.';
       }
       const [{ text, currentTabId }, history] = setup;
+      const budget = await this.deps.budget?.().catch(() => undefined);
 
       const plan = await bounded(
         async () =>
@@ -438,7 +490,10 @@ export class AgentRunner {
         nudges: 0,
         toolSuccesses: 0,
         lastToolFailed: false,
-        pageDataRead: false,
+        // An earlier answer that quoted a page is still page data in this task.
+        pageDataRead: history.some((turn) => turn.untrusted !== false),
+        modelCallLimit: budget?.maxModelCalls ?? this.limits.maxModelCalls,
+        tokenLimit: budget?.maxTaskTokens ?? this.limits.maxTaskTokens,
         planned: calls.length > 0,
         planFailure: null,
         lastProgressAt: startedAt,
@@ -684,8 +739,12 @@ export class AgentRunner {
     if (elapsed >= this.limits.maxDurationMs) {
       return 'This task reached the 5 minute limit, so it was stopped.';
     }
-    if (run.modelCalls >= this.limits.maxModelCalls) {
-      return 'This task used too many AI requests, so it was stopped to protect your quota.';
+    if (run.modelCalls >= (run.modelCallLimit ?? this.limits.maxModelCalls)) {
+      return 'This task used too many AI requests, so it was stopped to protect your quota. You can change this limit in settings.';
+    }
+    const tokens = run.metrics.promptTokens + run.metrics.completionTokens;
+    if (tokens >= (run.tokenLimit ?? this.limits.maxTaskTokens)) {
+      return `This task used ${tokens.toLocaleString('en')} AI tokens, which is over its limit, so it was stopped to protect your quota. You can change this limit in settings.`;
     }
     if (run.totalFailures >= this.limits.maxTotalFailures) {
       return 'Too many steps of this task failed, so it was stopped. Check the page and try again.';
@@ -696,8 +755,11 @@ export class AgentRunner {
   /** Everything planned has run. Reports it, or hands over to the AI to recover. */
   private async finishPlan(run: AgentRun): Promise<void> {
     const failure = run.planFailure;
+    // What happened, not what was asked along the way.
+    const done = run.timeline.filter(
+      (entry) => entry.status === 'done' && entry.detail && entry.kind !== 'approval',
+    );
     if (!failure) {
-      const done = run.timeline.filter((entry) => entry.status === 'done' && entry.detail);
       const text = done.map((entry) => entry.detail).join(' ') || 'Done.';
       this.finish(run, 'completed', { summary: text.slice(0, MAX_SUMMARY_CHARS) });
       await this.remember(run, text);
@@ -706,7 +768,17 @@ export class AgentRunner {
     const canRecover =
       failure.recoverable && (this.deps.canUseModel ? await this.deps.canUseModel() : true);
     if (!canRecover) {
-      this.finish(run, 'failed', { error: failure.message }, failure.kind);
+      // What did happen matters as much as what did not, since it stays done.
+      const worked = done
+        .filter((entry) => entry.kind === 'act')
+        .map((entry) => entry.detail)
+        .join(' ');
+      this.finish(
+        run,
+        'failed',
+        { error: worked ? `${failure.message} Already done: ${worked}` : failure.message },
+        failure.kind,
+      );
       return;
     }
     run.planned = false;
@@ -722,6 +794,13 @@ export class AgentRunner {
         run,
         skipped,
         toolFailure('skipped', 'Skipped because an earlier step did not work.'),
+      );
+      this.addEntry(
+        run,
+        'act',
+        'skipped',
+        describeToolCall(skipped.name, skipped.arguments as Record<string, unknown>),
+        'Not done, because an earlier step did not work.',
       );
     }
   }
@@ -927,7 +1006,7 @@ export class AgentRunner {
 
     const validation = validateToolCall(call.name, call.arguments);
     if (!validation.ok) {
-      this.addEntry(run, 'error', 'failed', `Rejected ${call.name}`, validation.error);
+      this.addEntry(run, 'error', 'failed', 'The AI suggested an invalid action', 'Not done.');
       this.completeCall(
         run,
         call,
@@ -939,16 +1018,21 @@ export class AgentRunner {
 
     const { tool, args } = validation;
     const label = describeToolCall(tool.name, args);
-    // Looking again after something has changed is progress. Repeating an action is not.
-    const signature = JSON.stringify([
-      tool.name,
-      args,
-      tool.effect === 'observe' ? run.progressEpoch : 0,
-    ]);
+    const action = JSON.stringify([tool.name, args]);
+    // Anything after real progress is a new attempt, so scrolling five times is fine. Repeating
+    // something that changes nothing, or that fails, is what a stuck loop looks like.
+    const signature = JSON.stringify([tool.name, args, run.progressEpoch]);
+    const overused = (run.actionRepeats?.[action] ?? 0) >= this.limits.maxSameAction;
 
     // Skipped once approved, so asking the user does not count as repeating.
-    if (!run.approvedKey && isRepetitive(run.recentCalls, signature, this.limits)) {
-      this.addEntry(run, 'error', 'failed', label, 'Already tried this. Not repeating it.');
+    if (!run.approvedKey && (overused || isRepetitive(run.recentCalls, signature, this.limits))) {
+      this.addEntry(
+        run,
+        'error',
+        'failed',
+        label,
+        'Repeated without changing anything, so it was not run again.',
+      );
       this.completeCall(
         run,
         call,
@@ -996,7 +1080,8 @@ export class AgentRunner {
       currentTabId: run.currentTabId,
       protectedTabId: run.protectedTabId,
       instruction: run.instruction,
-      pageDataRead: run.pageDataRead,
+      // A plan comes straight from what the user typed, so no page could have shaped it.
+      pageDataRead: run.pageDataRead && !run.planned,
       signal: stepSignal,
     });
 
@@ -1021,6 +1106,8 @@ export class AgentRunner {
     if (!isAgentActive(run.status)) return;
 
     if (assessment.decision === 'block') {
+      // An answer covers one proposal, and this one is not going ahead.
+      run.approvedKey = null;
       this.addEntry(run, 'error', 'failed', label, this.resultDetail(assessment.result));
       if (this.endsTask(run, call, assessment.result)) return;
       this.completeCall(run, call, assessment.result, true);
@@ -1030,7 +1117,7 @@ export class AgentRunner {
     if (tool.batchSize) {
       // After the safety check, which explains a single oversized request better.
       const size = tool.batchSize(args);
-      const refusal = run.startedBatches.includes(signature)
+      const refusal = run.startedBatches.includes(action)
         ? toolFailure(
             'batch_already_run',
             'This batch was already run in this task, so it was not run again. Report the earlier result.',
@@ -1066,7 +1153,7 @@ export class AgentRunner {
     if (tool.cost === 'vision') run.visionCalls += 1;
     if (tool.effect === 'act' && !tool.batchSize) run.actionCount += 1;
     if (tool.batchSize) {
-      run.startedBatches.push(signature);
+      run.startedBatches.push(action);
       run.liveBatch = { done: 0, total: tool.batchSize(args) };
     }
     const batchBase = run.batchActions;
@@ -1132,14 +1219,30 @@ export class AgentRunner {
     run.batchActions = batchBase + (result.tabsCreated ?? 0);
     entry.status = result.ok ? 'done' : 'failed';
     if (result.ok && CONTENT_TOOLS.has(tool.name)) run.readPageContent = true;
-    if (result.ok && result.untrusted && tool.effect === 'observe') run.pageDataRead = true;
+    // Titles and text from any page count, including what opening one reports back.
+    if (result.ok && result.untrusted) run.pageDataRead = true;
     entry.detail = this.resultDetail(result);
+    if (tool.effect === 'act') {
+      run.actionRepeats = {
+        ...run.actionRepeats,
+        [action]: (run.actionRepeats?.[action] ?? 0) + 1,
+      };
+      this.deps.onAction?.(
+        {
+          summary: label,
+          ok: result.ok,
+          detail: entry.detail ?? '',
+          via: run.planned ? 'instruction' : 'ai',
+        },
+        run,
+      );
+    }
     if (result.ok && result.currentTabId !== undefined) run.currentTabId = result.currentTabId;
     run.lastToolFailed = !result.ok;
 
     if (result.ok) {
       run.toolSuccesses += 1;
-      if (tool.effect === 'act') run.progressEpoch += 1;
+      if (tool.effect === 'act' && !result.noEffect) run.progressEpoch += 1;
     }
 
     if (this.endsTask(run, call, result)) return;
@@ -1201,9 +1304,9 @@ export class AgentRunner {
     this.pushToolResult(run, call, result);
     run.pendingCalls.shift();
     // However a planned step failed, including being refused, the rest was planned on it.
-    if (run.planned && !result.ok) this.abandonPlan(run, result.message, result.recoverable);
+    if (run.planned && !result.ok) this.abandonPlan(run, userMessage(result), result.recoverable);
     if (countsAsFailure) {
-      this.countFailure(run, result.ok ? '' : result.message);
+      this.countFailure(run, result.ok ? '' : userMessage(result));
     } else if (result.ok) {
       run.consecutiveFailures = 0;
     }
@@ -1229,7 +1332,7 @@ export class AgentRunner {
   }
 
   private resultDetail(result: ToolResult): string {
-    return (result.ok ? result.summary : result.message).slice(0, MAX_DETAIL_CHARS);
+    return userMessage(result).slice(0, MAX_DETAIL_CHARS);
   }
 
   private addEntry(
@@ -1274,6 +1377,17 @@ export class AgentRunner {
     for (const entry of run.timeline) {
       if (entry.status === 'running') entry.status = 'skipped';
     }
+    if (status === 'cancelled') {
+      this.deps.onAction?.(
+        {
+          summary: 'Stopped the task',
+          ok: false,
+          detail: outcome.summary ?? 'Stopped.',
+          via: run.planned ? 'instruction' : 'ai',
+        },
+        run,
+      );
+    }
     // The model conversation is only needed while running.
     run.messages = [];
     if (status !== 'completed') {
@@ -1284,7 +1398,11 @@ export class AgentRunner {
   private async remember(run: AgentRun, outcome: string): Promise<void> {
     const turns = await this.deps.store.loadConversation();
     await this.deps.store.saveConversation(
-      addConversationTurn(turns, { instruction: run.instruction, outcome }),
+      addConversationTurn(turns, {
+        instruction: run.instruction,
+        outcome,
+        untrusted: run.pageDataRead || run.readPageContent,
+      }),
     );
   }
 

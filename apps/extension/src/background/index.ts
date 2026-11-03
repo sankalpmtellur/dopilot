@@ -8,12 +8,15 @@ import { testGroqKey } from '@/lib/groq-test';
 import { ALLOWED_WEB_ORIGINS, createExternalHandler } from '@/messaging/external';
 import { handleInternalMessage } from '@/messaging/internal';
 import { transcribeAudio } from '@/lib/speech-service';
+import { isAgentActive } from '@dopilot/shared';
 import {
   agentRunner,
   handleWindowClosed,
+  isWatchdog,
   mcpBridge,
   noteDopilotTab,
   startAgentTask,
+  syncWatchdog,
   vision,
 } from './agent-host';
 import { buildState, confirmations, runPanelCommand, runWebsiteCommand } from './runtime';
@@ -24,11 +27,10 @@ void restrictStorageToTrustedContexts();
 void agentRunner.resume();
 void mcpBridge.restore();
 
-const WATCHDOG_ALARM = 'dopilot-watchdog';
-// Timers die with the worker. An alarm wakes it, so a task cannot outlive its limits unseen.
-void chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 0.5 });
+// Only while a task runs, so a task cannot outlive its limits unseen and an idle browser is left alone.
+void agentRunner.view().then((run) => syncWatchdog(run !== null && isAgentActive(run.status)));
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === WATCHDOG_ALARM) void agentRunner.tick();
+  if (isWatchdog(alarm)) void agentRunner.tick();
 });
 
 chrome.runtime.onInstalled.addListener(() => {

@@ -29,6 +29,8 @@ export interface ConsoleMessage {
   retry?: string;
   /** Whose problem this is, when that is not obvious from the message. */
   hint?: string;
+  /** Something is missing from settings, so a way there is offered. */
+  action?: 'settings';
 }
 
 export interface ConfirmationRequest {
@@ -73,7 +75,7 @@ export function consoleReducer(state: ConsoleMessage[], action: Action): Console
   }
 }
 
-export const HELP_TEXT = `I understand these exact commands:\n${COMMAND_EXAMPLES.map(
+export const HELP_TEXT = `Say what you want in your own words, such as “Open 5 new tabs” or “Summarize this page”. These exact commands also work:\n${COMMAND_EXAMPLES.map(
   (example) => `• ${example}`,
 ).join('\n')}`;
 
@@ -244,7 +246,15 @@ export function useCommandConsole({
             if (!problem) return;
             dispatch({
               type: 'add',
-              messages: [{ id: createId(), role: 'dopilot', text: problem, status: 'error' }],
+              messages: [
+                {
+                  id: createId(),
+                  role: 'dopilot',
+                  text: problem,
+                  status: 'error',
+                  ...(/API key/i.test(problem) && { action: 'settings' as const }),
+                },
+              ],
             });
           },
           () => {
@@ -334,6 +344,9 @@ export function useCommandConsole({
             }),
           ...(run.failureKind &&
             FAILURE_HINTS[run.failureKind] && { hint: FAILURE_HINTS[run.failureKind] as string }),
+          ...((run.failureKind === 'key' || run.failureKind === 'model') && {
+            action: 'settings' as const,
+          }),
         },
       ],
     });

@@ -342,6 +342,27 @@ export async function verifyAgent(name, executable, extensionPath) {
     );
     await browser.send('Target.closeTarget', { targetId: opened.targetId });
 
+    // Two sites in a row are two tabs. The first must not be lost to the second.
+    const host = fixtures.base.replace('http://', '');
+    await send({
+      type: 'panel.start_agent',
+      instruction: `Open ${host}/wiki, then open ${host}/turing`,
+    });
+    const both = await finished();
+    const openNow = (await state()).tabs;
+    check(
+      'Opens both sites in “open X, then open Y”',
+      both?.status === 'completed' &&
+        both?.instruction.includes('/turing') &&
+        openNow.some((tab) => tab.url?.includes('/wiki')) &&
+        openNow.some((tab) => tab.url?.includes('/turing')),
+      both?.summary,
+    );
+    for (const fragment of ['/wiki', '/turing']) {
+      const page = await pageByUrl(fragment);
+      if (page) await browser.send('Target.closeTarget', { targetId: page.targetId });
+    }
+
     const noKey = await send({ type: 'panel.start_agent', instruction: 'Summarize this page' });
     check(
       'Refuses to start without a key, and says why',
@@ -360,6 +381,8 @@ export async function verifyAgent(name, executable, extensionPath) {
       tools(toolCall('open_tab', { url: `${fixtures.base}/wiki` })),
       say('Opened the wiki.'),
     ];
+    // Without this, waiting for a finished task can find the previous one still in state.
+    await send({ type: 'panel.reset_conversation' });
     await fill(panel, 'textarea', 'Open the fixture wiki.');
     await clickButton(panel, 'Send');
     const typed = await finished();
@@ -672,12 +695,14 @@ export async function verifyAgent(name, executable, extensionPath) {
     );
 
     const same = tools(toolCall('scroll_page', { direction: 'down' }));
-    await start('Keep scrolling', [same, same, same, same, say('It stopped working.')]);
+    // Twelve, because working repeats are allowed for a while. The ceiling still has to hold.
+    await start('Keep scrolling', [...Array(12).fill(same), say('It stopped working.')]);
     const looping = await finished();
     check(
       'Refuses to repeat the same action forever',
+      // It may end by the model giving up, or by three refusals in a row. Either way it ends.
       JSON.stringify(groq.chatRequests.at(-1).messages).includes('repeated_action') &&
-        looping?.status === 'completed',
+        ['completed', 'failed'].includes(looping?.status),
     );
 
     // --- Groq problems ---
@@ -939,7 +964,7 @@ export async function verifyAgent(name, executable, extensionPath) {
     mcpProcess = client;
 
     const { tools: listed } = await client.listTools();
-    check('MCP lists every browser tool', listed.length === 25, `${listed.length} tools`);
+    check('MCP lists every browser tool', listed.length === 26, `${listed.length} tools`);
 
     const parse = (result) => JSON.parse(result.content[0].text);
     const offline = parse(await client.callTool({ name: 'get_tabs', arguments: {} }));

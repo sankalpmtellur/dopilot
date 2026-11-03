@@ -45,7 +45,7 @@ function ApprovalPage({ approvalId }: { approvalId: string }) {
         <p data-testid="confirm-prompt" className="text-[15px] font-medium break-words">
           {approval.title}
         </p>
-        <p className="mt-1 text-[13px] text-muted">{approval.detail}</p>
+        <p className="mt-1 text-[13px] whitespace-pre-line text-muted">{approval.detail}</p>
         {approval.screenshotId && (
           <ScreenshotPreview id={approval.screenshotId} load={getScreenshotPreview} />
         )}

@@ -45,3 +45,12 @@ describe('parseCommand', () => {
     expect(parseCommand('close tab 0').kind).toBe('invalid');
   });
 });
+
+describe('tab numbers and addresses', () => {
+  it('reads “go to 3” as a tab, not a site called 3', () => {
+    expect(parseCommand('go to 3')).toEqual({
+      kind: 'command',
+      command: { action: 'tab.switch', target: { position: 3 } },
+    });
+  });
+});

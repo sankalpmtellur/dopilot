@@ -212,3 +212,35 @@ describe('parseCount', () => {
     },
   );
 });
+
+describe('audit regressions', () => {
+  it('keeps every site in “open X and Y”', () => {
+    expect(parse('Open YouTube and GitHub')).toEqual([
+      { kind: 'open_many', urls: ['https://www.youtube.com/', 'https://github.com/'] },
+    ]);
+  });
+
+  it('leaves “open X and do something else” to the clause rules', () => {
+    expect(parse('Open GitHub and summarize it')).toBeNull();
+  });
+
+  it.each([
+    ['scroll down 5 times', 5],
+    ['Reload three times', 3],
+    ['reload twice', 2],
+    ['press tab 4 times', 4],
+  ])('repeats “%s”', (text, times) => {
+    expect(parse(text)).toHaveLength(times);
+  });
+
+  it('does not repeat what makes no sense twice, or absurdly often', () => {
+    expect(parse('open github twice')).toBeNull();
+    expect(parse('scroll down 50 times')).toBeNull();
+  });
+
+  it('understands keys and tab ordinals', () => {
+    expect(parse('press the escape key')).toEqual([{ kind: 'press', key: 'Escape' }]);
+    expect(parse('press the big red button')).toBeNull();
+    expect(parse('switch to the third tab')).toEqual([{ kind: 'switch_position', position: 3 }]);
+  });
+});

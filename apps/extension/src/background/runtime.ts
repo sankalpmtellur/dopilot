@@ -68,6 +68,7 @@ async function record(
     summary: describeCommand(command),
     ok: result.ok,
     detail: result.message,
+    via: 'command',
   });
 }
 

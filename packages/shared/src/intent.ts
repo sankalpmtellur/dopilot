@@ -1,3 +1,5 @@
+import { PRESSABLE_KEYS } from './content-protocol.js';
+import type { PressableKey } from './content-protocol.js';
 import { validateNavigationUrl } from './url-policy.js';
 
 /** Well-known sites, with how to search them where the address is stable. */
@@ -56,12 +58,16 @@ export type SimpleStep =
   | { kind: 'switch_previous' }
   | { kind: 'scroll_direction'; direction: 'up' | 'down' | 'top' | 'bottom' }
   | { kind: 'scroll_text'; text: string }
+  | { kind: 'press'; key: PressableKey }
   | { kind: 'reload' }
   | { kind: 'back' }
   | { kind: 'forward' }
   | { kind: 'close' };
 
 const MAX_STEPS = 5;
+/** "Scroll down 5 times" is one clause but several steps. Past this it needs a person's eye. */
+const MAX_REPEATS = 10;
+const MAX_TOTAL_STEPS = 15;
 /** Room for a list of addresses. Anything longer is not a simple instruction. */
 const MAX_PARSED_CHARS = 1000;
 
@@ -160,9 +166,14 @@ function parseWholeBatch(text: string): SimpleStep | null {
     /^(?:open|launch|load|create)\s+(.+?)\s+(?:each\s+)?in\s+(?:a\s+)?(?:separate|different|individual|their own|new)\s+tabs?$/i.exec(
       text,
     )?.[1] ?? /^(?:open|create|make)\s+(?:new\s+)?tabs\s+for\s+(.+)$/i.exec(text)?.[1];
-  if (!separate) return null;
-  const urls = parseTargetList(separate);
-  return urls ? { kind: 'open_many', urls } : null;
+  if (separate) {
+    const urls = parseTargetList(separate);
+    return urls ? { kind: 'open_many', urls } : null;
+  }
+  // "Open YouTube and GitHub": only when every name is certain, so nothing else is lost.
+  const listed = /^(?:open|launch)\s+(.+(?:,|\s+and\s+).+)$/i.exec(text)?.[1];
+  const urls = listed ? parseTargetList(listed) : null;
+  return urls && urls.length > 1 ? { kind: 'open_many', urls } : null;
 }
 
 function siteKey(raw: string): string | null {
@@ -244,6 +255,16 @@ function parseClause(clause: string): SimpleStep | null {
 
   const position = /^(?:switch|go)(?: back)? to tab (\d{1,3})$/i.exec(clause);
   if (position?.[1]) return { kind: 'switch_position', position: Number(position[1]) };
+  const ordinal = /^(?:switch|go)(?: back)? to (?:the )?(\w+) tab$/i.exec(clause)?.[1];
+  const place = ordinal ? ORDINALS.indexOf(ordinal.toLowerCase()) : -1;
+  if (place > 0) return { kind: 'switch_position', position: place };
+
+  const pressed = /^(?:press|hit) (?:the )?(.+?)(?: key)?$/i.exec(clause)?.[1];
+  if (pressed) {
+    const wanted = pressed.toLowerCase().replace(/[\s-]+/g, '');
+    const key = PRESSABLE_KEYS.find((name) => name.toLowerCase() === wanted);
+    return key ? { kind: 'press', key } : null;
+  }
 
   const switched =
     /^(?:switch|change|return|go back)(?: back)? to (?:the |my )?(.+?)(?: tab)?$/i.exec(clause);
@@ -296,6 +317,23 @@ function parseClause(clause: string): SimpleStep | null {
   return null;
 }
 
+const REPEATABLE = new Set<SimpleStep['kind']>([
+  'scroll_direction',
+  'press',
+  'reload',
+  'back',
+  'forward',
+]);
+
+/** "Scroll down 5 times", "reload twice". */
+function splitRepeat(raw: string): { clause: string; times: number } {
+  const match = /^(.+?) (?:(once|twice|thrice)|(\S+) times)$/i.exec(raw);
+  if (!match?.[1]) return { clause: raw, times: 1 };
+  const word = match[2]?.toLowerCase();
+  const times = word ? ({ once: 1, twice: 2, thrice: 3 }[word] ?? 1) : parseCount(match[3] ?? '');
+  return times === null ? { clause: raw, times: 1 } : { clause: match[1], times };
+}
+
 /**
  * Recognizes instructions simple enough to carry out without the AI, which makes them
  * instant and free. Every clause must be understood exactly, or the whole instruction
@@ -322,16 +360,20 @@ export function parseSimpleInstruction(input: string): SimpleStep[] | null {
   if (clauses.length === 0 || clauses.length > MAX_STEPS) return null;
 
   const steps: SimpleStep[] = [];
-  for (const clause of clauses) {
+  for (const raw of clauses) {
+    const { clause, times } = splitRepeat(raw);
+    if (times < 1 || times > MAX_REPEATS) return null;
     // Batches read differently after one: "the last tab" means the last of those just opened.
     const batch = parseBatchClause(clause);
     const follows = isBatch(steps.at(-1));
     const needsBatch = batch?.kind === 'open_each' || batch?.kind === 'switch_created';
     const step = batch && (!needsBatch || follows) ? batch : parseClause(clause);
     if (!step) return null;
-    steps.push(step);
+    // Only actions that mean something twice. Opening or switching twice is not a request.
+    if (times > 1 && !REPEATABLE.has(step.kind)) return null;
+    for (let count = 0; count < times; count += 1) steps.push(step);
   }
-  return steps;
+  return steps.length <= MAX_TOTAL_STEPS ? steps : null;
 }
 
 /** The search address for a site, or null if it has no stable one. */

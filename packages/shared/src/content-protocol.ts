@@ -95,6 +95,14 @@ export const ElementFactsSchema = z.strictObject({
   /** Password, card, one-time code and similar fields. */
   isSecretField: z.boolean(),
   isChallenge: z.boolean(),
+  /** Inside a dialog or modal, where a button usually answers a question. */
+  inDialog: z.boolean().optional(),
+  /** What that dialog says, because "OK" means nothing without it. */
+  dialogText: z.string().optional(),
+  /** Its form has password or payment fields, whatever the button is called. */
+  formHasSecret: z.boolean().optional(),
+  /** Attributes that may say what an unlabelled control does. Only used to ask more often. */
+  hints: z.string().optional(),
 });
 export type ElementFacts = z.infer<typeof ElementFactsSchema>;
 

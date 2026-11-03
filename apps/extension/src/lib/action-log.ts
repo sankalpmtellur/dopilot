@@ -3,7 +3,7 @@ import type { ActionLogEntry } from '@dopilot/shared';
 import { z } from 'zod';
 
 const STORAGE_KEY = 'recentActions';
-const MAX_ENTRIES = 30;
+const MAX_ENTRIES = 100;
 
 let queue: Promise<unknown> = Promise.resolve();
 

@@ -610,3 +610,38 @@ describe('how much a page sends to the model', () => {
     expect(result).toMatchObject({ ok: true, noEffect: true });
   });
 });
+
+describe('audit regressions', () => {
+  async function describeButton(html: string): Promise<DescribeResult> {
+    document.body.innerHTML = html;
+    const items = await list();
+    const button = items.find((item) => item.role === 'button');
+    const reply = await agent.handle({ type: 'content.describe', ref: button?.ref as string });
+    return (reply as unknown as { data: DescribeResult }).data;
+  }
+
+  it('reports the dialog a button is in, with what it says', async () => {
+    const { element } = await describeButton(
+      '<div role="alertdialog">Really delete this?<button>OK</button></div>',
+    );
+    expect(element).toMatchObject({ inDialog: true });
+    expect(element?.dialogText).toContain('Really delete');
+  });
+
+  it('reports password fields in a form, and hints for unlabelled buttons', async () => {
+    const form = await describeButton(
+      '<form><input type="password" /><button type="button">Go</button></form>',
+    );
+    expect(form.element?.formHasSecret).toBe(true);
+    const icon = await describeButton('<button class="icon-trash" title="Row"></button>');
+    expect(icon.element?.hints).toContain('icon-trash');
+  });
+
+  it('moves focus on Tab, which scripted key presses do not do by themselves', async () => {
+    document.body.innerHTML = '<button id="a">A</button><button id="b">B</button>';
+    document.getElementById('a')?.focus();
+    const result = await agent.handle({ type: 'content.press', key: 'Tab' });
+    expect(result).toMatchObject({ ok: true });
+    expect(document.activeElement?.id).toBe('b');
+  });
+});

@@ -113,6 +113,15 @@ export const BROWSER_TOOLS = [
     input: z.strictObject({ tabId }),
   }),
   defineTool({
+    name: 'switch_tab_by_name',
+    description: 'Bring the one open tab whose title or address matches this name to the front.',
+    risk: 'interact',
+    effect: 'act',
+    // Plans use this when tab names are hidden. The model picks an ID from the list it is given.
+    hiddenFromAgent: true,
+    input: z.strictObject({ name: z.string().min(1).max(100) }),
+  }),
+  defineTool({
     name: 'close_tab',
     description: 'Close a tab. The user is always asked first.',
     risk: 'sensitive',
@@ -333,6 +342,7 @@ const LABELS: Record<string, (args: Record<string, unknown>) => string> = {
   open_tabs: ({ count, urls }) => `Opening ${Array.isArray(urls) ? urls.length : count} new tabs`,
   navigate: ({ url }) => `Going to ${url}`,
   switch_tab: () => 'Switching tabs',
+  switch_tab_by_name: ({ name }) => `Switching to the “${name}” tab`,
   close_tab: () => 'Closing a tab',
   reload_tab: () => 'Reloading',
   go_back: () => 'Going back',

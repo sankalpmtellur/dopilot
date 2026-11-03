@@ -5,7 +5,7 @@ import {
   toolSpecs,
   validateToolCall,
 } from '@dopilot/browser-tools';
-import type { PolicyDecision } from '@dopilot/browser-tools';
+import type { PolicyContext, PolicyDecision } from '@dopilot/browser-tools';
 import { wrapUntrustedContent } from '@dopilot/agent-core';
 import {
   DescribeResultSchema,
@@ -389,16 +389,48 @@ export function createToolService({
     return tabDetailsApproval(context);
   }
 
-  function tabDetailsApproval(context: Pick<ToolContext, 'runId'>): ToolAssessment {
+  function tabDetailsApproval(
+    context: Pick<ToolContext, 'runId'>,
+    detail = 'Dopilot needs tab titles and addresses to know which site it is on. Your browser may describe this as reading your browsing history.',
+  ): ToolAssessment {
     if (context.runId) tabDetailsAskedIn.add(context.runId);
     return {
       decision: 'approve',
       kind: 'tab_details',
       title: 'Allow Dopilot to see your tabs?',
-      detail:
-        'Dopilot needs tab titles and addresses to know which site it is on. Your browser may describe this as reading your browsing history.',
+      detail,
       key: 'tab_details',
     };
+  }
+
+  /** What an address is judged against, including where the task is at the moment. */
+  async function addressContext(context: ToolContext): Promise<PolicyContext> {
+    const tabId = context.pageDataRead ? await resolveTabId({}, context).catch(() => null) : null;
+    const tab = tabId === null ? null : await api.getTab(tabId).catch(() => null);
+    return {
+      ...(context.instruction !== undefined && { instruction: context.instruction }),
+      pageDataRead: context.pageDataRead === true,
+      ...(tab?.url && { currentUrl: tab.url }),
+    };
+  }
+
+  /** Open tabs whose title or address contains this name, leaving out Dopilot's own. */
+  function tabsMatching(
+    name: string,
+    tabs: Awaited<ReturnType<typeof listTabs>>,
+    rawTabs: chrome.tabs.Tab[],
+    protectedTabId?: number | null,
+  ) {
+    const wanted = name.toLowerCase().replace(/\s+/g, '');
+    return tabs.filter((tab) => {
+      if (tab.restricted || tab.id === protectedTabId) return false;
+      const raw = rawTabs.find((item) => item.id === tab.id);
+      if (isDopilotTab(tab.id, raw?.url)) return false;
+      return `${tab.title ?? ''} ${tab.url ?? ''}`
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .includes(wanted);
+    });
   }
 
   async function assess(
@@ -444,7 +476,10 @@ export function createToolService({
           ),
         };
       }
-      // Each address gets the same checks it would get on its own.
+      // Each address gets the same checks it would get on its own, and all of them are looked
+      // at before anything happens, so one answer can never cover an address nobody saw.
+      const policy = await addressContext(context);
+      const flagged: { url: string; reason: string }[] = [];
       for (const url of urls ?? []) {
         const validation = validateNavigationUrl(url);
         if (!validation.ok) {
@@ -453,18 +488,30 @@ export function createToolService({
             result: toolFailure('blocked_url', `${validation.reason} No tabs were opened.`, false),
           };
         }
-        const decision = fromPolicy(
-          'open_tab',
-          assessToolCall('open_tab', { url }, null, {
-            ...(context.instruction !== undefined && { instruction: context.instruction }),
-            pageDataRead: context.pageDataRead === true,
-          }),
-          null,
-          { url },
-        );
-        if (decision.decision !== 'allow') return decision;
+        const decision = assessToolCall('open_tab', { url }, null, policy);
+        if (decision.decision === 'block') {
+          return {
+            decision: 'block',
+            result: toolFailure(decision.code, decision.reason, false, decision.stopTask),
+          };
+        }
+        if (decision.decision === 'approve') flagged.push({ url, reason: decision.reason });
       }
-      return { decision: 'allow' };
+      if (flagged.length === 0) return { decision: 'allow' };
+      return {
+        decision: 'approve',
+        kind: 'action',
+        title:
+          flagged.length === 1
+            ? `Open ${flagged[0]?.url.slice(0, 80)}?`
+            : `Open ${flagged.length} addresses that need checking?`,
+        detail: [
+          `This opens ${size} ${size === 1 ? 'tab' : 'tabs'}. Check these first:`,
+          ...flagged.map(({ url, reason }) => `• ${url.slice(0, 160)} (${reason})`),
+        ].join('\n'),
+        // The whole proposal, so any change to the list needs a new answer.
+        key: JSON.stringify(['open_tabs', urls, args.activate ?? null]),
+      };
     }
 
     if (name === 'open_tab' || name === 'navigate') {
@@ -497,12 +544,16 @@ export function createToolService({
       }
       return fromPolicy(
         name,
-        assessToolCall(name, args, null, {
-          ...(context.instruction !== undefined && { instruction: context.instruction }),
-          pageDataRead: context.pageDataRead === true,
-        }),
+        assessToolCall(name, args, null, await addressContext(context)),
         null,
         args,
+      );
+    }
+
+    if (name === 'switch_tab_by_name' && !(await permissions.hasTabDetails())) {
+      return tabDetailsApproval(
+        context,
+        'To find a tab by name, Dopilot needs tab titles and addresses. Your browser may describe this as reading your browsing history. Without it, “switch to tab 2” still works.',
       );
     }
 
@@ -705,7 +756,7 @@ export function createToolService({
               tabsCreated: 1,
               currentTabId: tab.id,
               pageChanged: true,
-              untrusted: true,
+              // A blank tab has no page in it, so nothing here could have come from a website.
               data: await describeTab(tab.id),
             };
           }
@@ -753,6 +804,38 @@ export function createToolService({
             pageChanged: true,
             untrusted: true,
             data: described,
+          };
+        }
+
+        case 'switch_tab_by_name': {
+          const wanted = args.name as string;
+          const [tabs, rawTabs] = await Promise.all([
+            listTabs(api),
+            api.queryTabs({ windowType: 'normal' }),
+          ]);
+          const matches = tabsMatching(wanted, tabs, rawTabs, context.protectedTabId);
+          const match = matches[0];
+          if (!match) return toolFailure('no_matching_tab', `No open tab matches “${wanted}”.`);
+          if (matches.length > 1) {
+            return toolFailure(
+              'ambiguous_tab',
+              `${matches.length} open tabs match “${wanted}”, so Dopilot did not guess. Use a more exact name, or “switch to tab 2”.`,
+              false,
+            );
+          }
+          abortIfStopped(context.signal);
+          const failure = await runCommand(
+            { action: 'tab.switch', target: { tabId: match.id } },
+            context,
+          );
+          if (failure) return failure;
+          return {
+            ok: true,
+            summary: `Switched to “${(match.title ?? wanted).slice(0, 80)}”.`,
+            currentTabId: match.id,
+            pageChanged: true,
+            untrusted: true,
+            data: await describeTab(match.id),
           };
         }
 
@@ -1131,16 +1214,19 @@ export function createToolService({
     const steps = parseSimpleInstruction(instruction);
     if (!steps) return null;
 
-    const [tabs, rawTabs, startTab] = await Promise.all([
+    const [tabs, rawTabs, startTab, details] = await Promise.all([
       listTabs(api),
       api.queryTabs({ windowType: 'normal' }),
       findCurrentTabId(api, source, protectedTabId ?? undefined),
+      permissions.hasTabDetails(),
     ]);
     let current = startTab;
     let previous = previousTabId(rawTabs, startTab, protectedTabId);
     const calls: { name: string; arguments: Record<string, unknown> }[] = [];
     let openedSite: string | null = null;
     let inFreshTab = false;
+    /** A "new tab" step with no address yet. The next address goes there, for one tab in all. */
+    let blankCall: { name: string; arguments: Record<string, unknown> } | null = null;
 
     const switchTo = (tabId: number) => {
       calls.push({ name: 'switch_tab', arguments: { tabId } });
@@ -1158,11 +1244,10 @@ export function createToolService({
       );
     };
     const open = (url: string, newTab: boolean) => {
-      if (inFreshTab) {
-        const last = calls.at(-1);
-        if (last?.name === 'open_tab') last.arguments = { url };
-        else calls.push({ name: 'navigate', arguments: { url } });
-      } else if (newTab || currentIsUnusable()) {
+      if (blankCall && blankCall === calls.at(-1)) {
+        blankCall.arguments = { url };
+        blankCall = null;
+      } else if (newTab || (!inFreshTab && currentIsUnusable())) {
         calls.push({ name: 'open_tab', arguments: { url } });
         inFreshTab = true;
       } else {
@@ -1197,7 +1282,8 @@ export function createToolService({
           break;
         }
         case 'new_tab':
-          calls.push({ name: 'open_tab', arguments: {} });
+          blankCall = { name: 'open_tab', arguments: {} };
+          calls.push(blankCall);
           inFreshTab = true;
           openedSite = null;
           break;
@@ -1224,18 +1310,17 @@ export function createToolService({
           break;
         }
         case 'switch_named': {
-          const wanted = step.name.toLowerCase().replace(/\s+/g, '');
-          const matches = tabs.filter((tab) => {
-            if (tab.restricted || tab.id === protectedTabId) return false;
-            const raw = rawTabs.find((item) => item.id === tab.id);
-            if (isDopilotTab(tab.id, raw?.url)) return false;
-            return `${tab.title ?? ''} ${tab.url ?? ''}`
-              .toLowerCase()
-              .replace(/\s+/g, '')
-              .includes(wanted);
-          });
-          if (matches.length !== 1 || !matches[0]) return null;
-          switchTo(matches[0].id);
+          const matches = tabsMatching(step.name, tabs, rawTabs, protectedTabId);
+          if (matches.length === 1 && matches[0]) {
+            switchTo(matches[0].id);
+          } else if (!details) {
+            // Names are hidden until allowed. Asking beats sending a tab switch to the AI.
+            calls.push({ name: 'switch_tab_by_name', arguments: { name: step.name } });
+            previous = current;
+            current = null;
+          } else {
+            return null;
+          }
           inFreshTab = false;
           break;
         }
@@ -1256,6 +1341,9 @@ export function createToolService({
           break;
         case 'scroll_text':
           calls.push({ name: 'scroll_page', arguments: { text: step.text } });
+          break;
+        case 'press':
+          calls.push({ name: 'press_key', arguments: { key: step.key } });
           break;
         case 'reload':
           calls.push({ name: 'reload_tab', arguments: {} });

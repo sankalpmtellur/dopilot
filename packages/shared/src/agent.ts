@@ -168,6 +168,13 @@ export const AgentRunViewSchema = z.object({
   error: z.string().nullable(),
   failureKind: AgentFailureKindSchema.nullable().optional(),
   metrics: AgentMetricsSchema.optional(),
+  /** What is still to come, for plans and calls already decided on. */
+  pendingSteps: z.array(z.string()).optional(),
+  /** The limits this task runs under, from the user's settings. */
+  modelRequestLimit: z.number().int().positive().optional(),
+  tokenLimit: z.number().int().positive().optional(),
+  /** New tabs this task has really opened. */
+  tabsOpened: z.number().int().nonnegative().optional(),
 });
 export type AgentRunView = z.infer<typeof AgentRunViewSchema>;
 

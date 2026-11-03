@@ -40,7 +40,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function GroqSection() {
+/** `compact` is for first-run setup, where choosing a model can wait. */
+export function GroqSection({ compact = false }: { compact?: boolean }) {
   const [status, setStatus] = useState<GroqStatus | null>(null);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -162,7 +163,7 @@ function GroqSection() {
         </a>
       </p>
 
-      <div className="flex flex-col gap-2">
+      <div className={compact ? 'hidden' : 'flex flex-col gap-2'}>
         <label htmlFor="groq-model" className="text-[13px]">
           Model
         </label>
@@ -223,6 +224,49 @@ function usePreferences() {
 }
 
 type MicState = 'granted' | 'denied' | 'prompt' | 'unknown';
+
+/** Spending limits, so one task cannot use up a free-tier allowance. */
+function LimitsSection() {
+  const [preferences, update] = usePreferences();
+  return (
+    <Section title="Limits for each task">
+      <label htmlFor="max-requests" className="flex items-center justify-between gap-3 text-[13px]">
+        AI requests
+        <select
+          id="max-requests"
+          value={preferences.maxTaskRequests}
+          onChange={(event) => update({ maxTaskRequests: Number(event.target.value) })}
+          className="h-8 rounded-lg border border-line bg-surface px-2 text-sm outline-none focus:border-faint"
+        >
+          {[5, 10, 20, 30].map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label htmlFor="max-tokens" className="flex items-center justify-between gap-3 text-[13px]">
+        AI tokens
+        <select
+          id="max-tokens"
+          value={preferences.maxTaskTokens}
+          onChange={(event) => update({ maxTaskTokens: Number(event.target.value) })}
+          className="h-8 rounded-lg border border-line bg-surface px-2 text-sm outline-none focus:border-faint"
+        >
+          {[10_000, 30_000, 60_000, 120_000].map((value) => (
+            <option key={value} value={value}>
+              {value.toLocaleString('en')}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-xs leading-relaxed text-faint">
+        A task stops when it reaches either limit, and tells you. Tokens are counted from what Groq
+        reports. Commands that need no AI use neither.
+      </p>
+    </Section>
+  );
+}
 
 /** What happens when the model chosen above stops working. */
 function ModelFallbackSection() {
@@ -594,6 +638,7 @@ export function SettingsForm() {
           <ThemeSwitch />
         </div>
       </Section>
+      <LimitsSection />
       {MCP_AVAILABLE && <McpSection />}
     </div>
   );

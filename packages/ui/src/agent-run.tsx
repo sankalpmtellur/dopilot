@@ -1,6 +1,6 @@
 import { agentStatusLabel } from '@dopilot/shared';
 import type { AgentApproval, AgentRunView, AgentTimelineEntry } from '@dopilot/shared';
-import { Check, CircleSlash, Eye, Hand, Loader, OctagonX, X } from 'lucide-react';
+import { Check, Circle, CircleSlash, Eye, Hand, Loader, OctagonX, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from './button.js';
 import { StatusDot } from './status.js';
@@ -20,8 +20,15 @@ const ENTRY_STATUS_TEXT = {
   skipped: 'Skipped',
 } as const;
 
-export function AgentTimeline({ entries }: { entries: AgentTimelineEntry[] }) {
-  if (entries.length === 0) return null;
+export function AgentTimeline({
+  entries,
+  pending = [],
+}: {
+  entries: AgentTimelineEntry[];
+  /** Steps decided on but not started. */
+  pending?: string[];
+}) {
+  if (entries.length === 0 && pending.length === 0) return null;
   return (
     <ol className="flex flex-col gap-1.5" aria-label="Steps">
       {entries.map((entry) => (
@@ -44,6 +51,17 @@ export function AgentTimeline({ entries }: { entries: AgentTimelineEntry[] }) {
           </div>
         </li>
       ))}
+      {pending.map((label, index) => (
+        <li key={`${index}-${label}`} className="flex gap-2 text-faint">
+          <span className="mt-0.5 shrink-0">
+            <Circle aria-hidden="true" className="size-3.5" />
+          </span>
+          <p className="min-w-0 flex-1 text-[13px] break-words">
+            <span className="sr-only">Pending: </span>
+            {label}
+          </p>
+        </li>
+      ))}
     </ol>
   );
 }
@@ -56,6 +74,10 @@ function useElapsedSeconds(startedAt: number): number {
     return () => clearInterval(timer);
   }, []);
   return Math.max(0, Math.round((now - startedAt) / 1000));
+}
+
+function tokensUsed(run: AgentRunView): number {
+  return (run.metrics?.promptTokens ?? 0) + (run.metrics?.completionTokens ?? 0);
 }
 
 function statusTone(run: AgentRunView): StatusTone {
@@ -126,6 +148,7 @@ export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: Ag
           {agentStatusLabel(run.status)}
           <span className="font-normal text-faint">
             {elapsed}s · {run.actionCount} of {run.maxActions} actions
+            {run.tabsOpened ? ` · ${run.tabsOpened} tabs opened` : ''}
           </span>
         </p>
         <Button variant="danger" aria-label="Stop task" onClick={onStop} className="shrink-0">
@@ -135,6 +158,17 @@ export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: Ag
       </div>
 
       <p className="text-[13px] break-words text-muted">{run.instruction}</p>
+
+      {run.metrics && run.metrics.modelRequests > 0 && (
+        <p className="text-xs text-faint">
+          {run.metrics.modelRequests}
+          {run.modelRequestLimit ? ` of ${run.modelRequestLimit}` : ''} AI requests
+          {tokensUsed(run) > 0 &&
+            ` · ${tokensUsed(run).toLocaleString('en')}${
+              run.tokenLimit ? ` of ${run.tokenLimit.toLocaleString('en')}` : ''
+            } tokens`}
+        </p>
+      )}
 
       {run.notice && (
         <p role="status" className="text-xs text-warn">
@@ -150,9 +184,9 @@ export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: Ag
       )}
 
       {/* The prompt below says the same as its timeline entry, so the steps wait. */}
-      {count > 0 && !run.approval && (
+      {(count > 0 || Boolean(run.pendingSteps?.length)) && !run.approval && (
         <div ref={scroller} className="max-h-40 overflow-y-auto">
-          <AgentTimeline entries={run.timeline} />
+          <AgentTimeline entries={run.timeline} pending={run.pendingSteps ?? []} />
         </div>
       )}
 
@@ -163,7 +197,9 @@ export function AgentPanel({ run, onStop, onAnswerApproval, loadScreenshot }: Ag
           className="rounded-lg bg-accent-soft p-2.5"
         >
           <p className="text-sm font-medium break-words">{run.approval.title}</p>
-          <p className="mt-0.5 text-xs break-words text-muted">{run.approval.detail}</p>
+          <p className="mt-0.5 text-xs break-words whitespace-pre-line text-muted">
+            {run.approval.detail}
+          </p>
           {run.approval.screenshotId && loadScreenshot && (
             <ScreenshotPreview id={run.approval.screenshotId} load={loadScreenshot} />
           )}

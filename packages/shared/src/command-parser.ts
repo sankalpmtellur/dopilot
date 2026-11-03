@@ -53,6 +53,16 @@ export function parseCommand(input: string): ParsedInput {
   const fixed = FIXED_COMMANDS[normalized];
   if (fixed) return { kind: 'command', command: fixed };
 
+  // Before addresses, or "go to 3" would be read as a site called 3.
+  const switched = /^(?:switch to|go to)(?: tab)? (\d+)$/.exec(normalized);
+  if (switched?.[1]) {
+    const position = Number(switched[1]);
+    if (position < 1 || position > 10000) {
+      return { kind: 'invalid', message: 'Tab numbers start at 1.' };
+    }
+    return { kind: 'command', command: { action: 'tab.switch', target: { position } } };
+  }
+
   const opened = /^(?:open|go to|goto)\s+(\S+)$/i.exec(text);
   if (opened?.[1]) {
     const validation = validateNavigationUrl(opened[1]);
@@ -62,15 +72,6 @@ export function parseCommand(input: string): ParsedInput {
     // "open youtube" is a request for the agent. "open chrome://settings" is refused outright.
     const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(opened[1]);
     return hasScheme ? { kind: 'invalid', message: validation.reason } : { kind: 'unknown' };
-  }
-
-  const switched = /^(?:switch to|go to)(?: tab)? (\d+)$/.exec(normalized);
-  if (switched?.[1]) {
-    const position = Number(switched[1]);
-    if (position < 1 || position > 10000) {
-      return { kind: 'invalid', message: 'Tab numbers start at 1.' };
-    }
-    return { kind: 'command', command: { action: 'tab.switch', target: { position } } };
   }
 
   const closed = /^close tab (\d+)$/.exec(normalized);

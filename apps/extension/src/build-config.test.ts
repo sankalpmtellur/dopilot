@@ -16,6 +16,15 @@ describe('development builds', () => {
   });
 });
 
+describe('extension-only production builds', () => {
+  const manifest = buildManifest(base, resolveBuildConfig({ DOPILOT_CHANNEL: 'production' }));
+
+  it('trust no website at all', () => {
+    expect(manifest.externally_connectable).toBeUndefined();
+    expect(JSON.stringify(manifest)).not.toContain('localhost');
+  });
+});
+
 describe('production builds', () => {
   const manifest = buildManifest(base, resolveBuildConfig(production));
 
@@ -41,7 +50,6 @@ describe('production builds', () => {
   });
 
   it.each([
-    [undefined, /needs DOPILOT_WEB_ORIGIN/],
     ['http://dopilot.example', /https/],
     ['https://dopilot.example/app', /no path/],
     ['https://localhost:3000', /public domain/],

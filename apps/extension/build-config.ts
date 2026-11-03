@@ -1,7 +1,7 @@
 /**
  * What differs between a local build and a public one. Local builds are unchanged, and
  * keep the pinned key so existing installs and their data keep working. A public build
- * must name its website, and it carries nothing that only exists for development.
+ * carries nothing that only exists for development, and trusts a website only if named.
  */
 export interface BuildConfig {
   production: boolean;
@@ -12,7 +12,7 @@ export interface BuildConfig {
 
 interface Manifest {
   key?: string;
-  externally_connectable: { matches: string[] };
+  externally_connectable?: { matches: string[] };
   content_security_policy: { extension_pages: string };
 }
 
@@ -28,7 +28,15 @@ export function resolveBuildConfig(env: Record<string, string | undefined>): Bui
   }
 
   const origin = env.DOPILOT_WEB_ORIGIN;
-  if (!origin) throw new Error('A production build needs DOPILOT_WEB_ORIGIN.');
+  // The extension stands alone by default, so a public build trusts no website unless told to.
+  if (!origin) {
+    return {
+      production: true,
+      webOrigins: [],
+      mcp: env.DOPILOT_MCP === '1',
+      keepKey: env.DOPILOT_KEEP_KEY === '1',
+    };
+  }
   let parsed: URL;
   try {
     parsed = new URL(origin);
@@ -52,7 +60,14 @@ export function resolveBuildConfig(env: Record<string, string | undefined>): Bui
 
 export function buildManifest<M extends Manifest>(base: M, config: BuildConfig): M {
   const manifest = structuredClone(base);
-  manifest.externally_connectable = { matches: config.webOrigins.map((origin) => `${origin}/*`) };
+  // Browsers treat an empty list as a mistake, so no websites means no entry at all.
+  if (config.webOrigins.length > 0) {
+    manifest.externally_connectable = {
+      matches: config.webOrigins.map((origin) => `${origin}/*`),
+    };
+  } else {
+    delete manifest.externally_connectable;
+  }
   if (!config.keepKey) delete manifest.key;
   if (!config.mcp) {
     manifest.content_security_policy.extension_pages =

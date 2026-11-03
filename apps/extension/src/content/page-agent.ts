@@ -52,6 +52,10 @@ const SECRET_NAME =
 const PAYMENT_FRAME = /stripe|paypal|braintree|adyen|checkout|payment|card|klarna|square/i;
 
 const NAME_LIMIT = 120;
+const DIALOG_TEXT_LIMIT = 300;
+const HINTS_LIMIT = 200;
+const TABBABLE_SELECTOR =
+  'a[href],button,input:not([type="hidden"]),select,textarea,summary,[tabindex],[contenteditable="true"]';
 const ACTION_SETTLE_MS = 500;
 const INTERACTIVE_BUDGET_CHARS = 3000;
 const LISTED_NAME_LIMIT = 70;
@@ -338,7 +342,59 @@ export function createPageAgent(options: PageAgentOptions = {}) {
       isFileInput: element instanceof HTMLInputElement && element.type === 'file',
       isSecretField: isSecretField(element),
       isChallenge: isChallengeElement(element),
+      ...dialogFacts(element),
+      formHasSecret: formHasSecret(form),
+      hints: hintsFor(element),
     };
+  }
+
+  function dialogFacts(element: Element): Pick<ElementFacts, 'inDialog' | 'dialogText'> {
+    const dialog = element.closest(
+      'dialog,[role="dialog"],[role="alertdialog"],[aria-modal="true"]',
+    );
+    return dialog
+      ? { inDialog: true, dialogText: clean(dialog.textContent, DIALOG_TEXT_LIMIT) }
+      : { inDialog: false };
+  }
+
+  function formHasSecret(form: HTMLFormElement | null): boolean {
+    if (!form) return false;
+    for (const field of form.querySelectorAll('input,textarea,[contenteditable]')) {
+      if (isSecretField(field)) return true;
+    }
+    return false;
+  }
+
+  function hintsFor(element: Element): string {
+    const icon = element.querySelector('svg,img,use,i');
+    return clean(
+      [
+        element.id,
+        element.getAttribute('class'),
+        element.getAttribute('name'),
+        element.getAttribute('title'),
+        element.getAttribute('data-testid'),
+        element.getAttribute('data-action'),
+        icon?.getAttribute('class'),
+        icon?.getAttribute('aria-label'),
+        icon?.getAttribute('data-icon'),
+        icon?.getAttribute('href'),
+      ]
+        .filter(Boolean)
+        .join(' '),
+      HINTS_LIMIT,
+    );
+  }
+
+  /** Scripted Tab presses do not move focus, so this does what the browser would have done. */
+  function moveFocus(from: Element): boolean {
+    const tabbable = [...document.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR)].filter(
+      (element) => element.tabIndex >= 0 && !isDisabled(element) && isVisible(element),
+    );
+    if (tabbable.length === 0) return false;
+    const next = tabbable[(tabbable.indexOf(from as HTMLElement) + 1) % tabbable.length];
+    next?.focus({ preventScroll: false });
+    return next !== undefined && next !== from;
   }
 
   /** Reports what an action actually did, so nothing is claimed that did not happen. */
@@ -569,6 +625,7 @@ export function createPageAgent(options: PageAgentOptions = {}) {
       return {
         ok: true,
         summary: `Could not scroll ${request.direction} any further. Already at the limit.`,
+        noEffect: true,
       };
     }
     const percent = Math.round((window.scrollY / Math.max(1, page - window.innerHeight)) * 100);
@@ -604,6 +661,7 @@ export function createPageAgent(options: PageAgentOptions = {}) {
     }
 
     const init = { ...KEY_INIT[key], bubbles: true, cancelable: true, composed: true };
+    let focusMoved = false;
     const { urlChanged, domChanged } = await observeEffect(() => {
       const proceed = target.dispatchEvent(new KeyboardEvent('keydown', init));
       target.dispatchEvent(new KeyboardEvent('keyup', init));
@@ -619,6 +677,8 @@ export function createPageAgent(options: PageAgentOptions = {}) {
         }
       } else if (key === 'Space' && target instanceof HTMLButtonElement) {
         target.click();
+      } else if (key === 'Tab') {
+        focusMoved = moveFocus(target);
       } else if (key === 'PageDown' || key === 'PageUp') {
         window.scrollBy({ top: (key === 'PageDown' ? 1 : -1) * window.innerHeight * 0.85 });
       }
@@ -626,6 +686,13 @@ export function createPageAgent(options: PageAgentOptions = {}) {
 
     if (urlChanged)
       return { ok: true, summary: `Pressed ${key}. The address changed.`, pageChanged: true };
+    if (focusMoved) {
+      const label = labelFor(focused());
+      return {
+        ok: true,
+        summary: label ? `Pressed Tab. Focus moved to “${label}”.` : 'Pressed Tab. Focus moved.',
+      };
+    }
     return {
       ok: true,
       summary: domChanged

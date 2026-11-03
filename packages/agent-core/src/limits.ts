@@ -9,10 +9,14 @@ export interface ExecutionLimits {
   maxIdenticalCalls: number;
   /** The same call this many times among recent calls catches A-B-A-B loops. */
   maxRepeatsInWindow: number;
+  /** The same action, even when it keeps working. Scrolling is fine. Forever is not. */
+  maxSameAction: number;
   /** Screenshots sent for analysis per task. Each one costs far more than a page read. */
   maxVisionCalls: number;
   /** A hard ceiling on Groq requests, to protect the user's quota. */
   maxModelCalls: number;
+  /** Tokens across a task, counted from what Groq reports. */
+  maxTaskTokens: number;
   /**
    * How many rate limits in a row to wait out. Per-minute limits are normal on free tiers
    * during longer tasks, so a successful request resets this and the task paces itself.
@@ -45,8 +49,10 @@ export const DEFAULT_EXECUTION_LIMITS: ExecutionLimits = {
   maxConsecutiveFailures: 3,
   maxIdenticalCalls: 3,
   maxRepeatsInWindow: 4,
+  maxSameAction: 10,
   maxVisionCalls: 5,
   maxModelCalls: 30,
+  maxTaskTokens: 60_000,
   maxRateLimitWaits: 3,
   maxRateLimitWaitMs: 60_000,
   maxResumes: 5,

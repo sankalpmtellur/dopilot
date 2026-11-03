@@ -3,6 +3,7 @@ import type { AgentRun, RunStore } from '@dopilot/agent-core';
 import type { ConversationTurn } from '@dopilot/agent-core';
 import { chooseToolModel, isAgentActive, MODEL_LIST_TTL_MS } from '@dopilot/shared';
 import type { AgentApproval, AgentSource } from '@dopilot/shared';
+import { appendActionLog } from '@/lib/action-log';
 import {
   loadApiKey,
   loadGroqStatus,
@@ -144,7 +145,10 @@ let keepAlive: ReturnType<typeof setInterval> | null = null;
 
 // Service workers sleep after 30 idle seconds. API calls keep this one awake during a task.
 function updateKeepAlive(run: AgentRun): void {
-  const working = isAgentActive(run.status) && run.status !== 'waiting_for_approval';
+  // A screenshot waiting for an answer lives only in this worker, so it has to stay awake.
+  const working =
+    isAgentActive(run.status) &&
+    (run.status !== 'waiting_for_approval' || Boolean(run.approval?.screenshotId));
   if (working && !keepAlive) {
     keepAlive = setInterval(() => void chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
   } else if (!working && keepAlive) {
@@ -200,14 +204,45 @@ async function presentApproval(approval: AgentApproval | null): Promise<void> {
   }
 }
 
+const WATCHDOG_ALARM = 'dopilot-watchdog';
+
+/** Timers die with the worker, so an alarm wakes it during a task. Idle, nothing wakes it. */
+export function syncWatchdog(active: boolean): void {
+  if (active) void chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 0.5 });
+  else void chrome.alarms.clear(WATCHDOG_ALARM);
+}
+
+export function isWatchdog(alarm: chrome.alarms.Alarm): boolean {
+  return alarm.name === WATCHDOG_ALARM;
+}
+
+let watchdogOn = false;
+
 export const agentRunner = new AgentRunner({
   store,
+  budget: async () => {
+    const { maxTaskRequests, maxTaskTokens } = await loadPreferences();
+    return { maxModelCalls: maxTaskRequests, maxTaskTokens };
+  },
+  onAction: (action, run) => {
+    void appendActionLog({
+      id: crypto.randomUUID(),
+      at: Date.now(),
+      source: run.source,
+      ...action,
+    }).catch(() => undefined);
+  },
   toolbox: service.toolbox,
   chooseModel,
   model: modelClient,
   canUseModel: async () => (await loadApiKey()) !== undefined,
   onChange: (run) => {
     updateKeepAlive(run);
+    const active = isAgentActive(run.status);
+    if (active !== watchdogOn) {
+      watchdogOn = active;
+      syncWatchdog(active);
+    }
     // Screenshots last no longer than the task that needed them.
     if (!isAgentActive(run.status)) vision.clear();
   },

@@ -2,6 +2,7 @@
 // Builds the extension for public distribution, proves the result is fit to publish, and
 // zips it for a store upload. It deploys nothing and uploads nothing.
 //
+//   pnpm release:extension                  extension only, trusting no website
 //   DOPILOT_WEB_ORIGIN=https://your.domain DOPILOT_KEEP_KEY=1 pnpm release:extension
 //
 // DOPILOT_KEEP_KEY=1 keeps the pinned key, which manual installs need: without it, each
@@ -33,10 +34,14 @@ const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
 const problems = [];
 const origin = process.env.DOPILOT_WEB_ORIGIN;
 
-if (
-  JSON.stringify(manifest.externally_connectable) !== JSON.stringify({ matches: [`${origin}/*`] })
-) {
-  problems.push('externally_connectable must name exactly the production website.');
+if (origin) {
+  if (
+    JSON.stringify(manifest.externally_connectable) !== JSON.stringify({ matches: [`${origin}/*`] })
+  ) {
+    problems.push('externally_connectable must name exactly the production website.');
+  }
+} else if (manifest.externally_connectable) {
+  problems.push('An extension-only build must not trust any website.');
 }
 if (manifest.key && process.env.DOPILOT_KEEP_KEY !== '1') problems.push('The manifest has a key.');
 if (

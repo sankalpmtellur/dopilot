@@ -1,4 +1,4 @@
-import { ExternalResponseSchema, PROTOCOL_VERSION } from '@dopilot/shared';
+import { DEFAULT_PREFERENCES, ExternalResponseSchema, PROTOCOL_VERSION } from '@dopilot/shared';
 import type { ExtensionState } from '@dopilot/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createExternalHandler } from './external';
@@ -24,7 +24,7 @@ const state: ExtensionState = {
     speechModels: [],
   },
   agent: null,
-  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true },
+  preferences: DEFAULT_PREFERENCES,
   recentActions: [],
 };
 

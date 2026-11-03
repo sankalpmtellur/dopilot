@@ -21,7 +21,7 @@ import {
   VoiceStatusLine,
 } from '@dopilot/ui';
 import type { ConsoleMessage } from '@dopilot/ui';
-import { ArrowLeft, ChevronRight, Plus, Settings } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Plus, Settings, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -35,6 +35,7 @@ import {
 } from '@/lib/panel-client';
 import { SettingsForm } from '@/settings/settings-form';
 import { CONVERSATION_STORAGE_KEY, usePanelState } from './use-panel-state';
+import { Welcome } from './welcome';
 
 async function loadConversation(): Promise<ConsoleMessage[]> {
   const stored = await chrome.storage.session.get(CONVERSATION_STORAGE_KEY);
@@ -75,7 +76,7 @@ export function App() {
       void refresh();
       return problem;
     },
-    onClear: () => void resetConversation(),
+    onClear: () => void resetConversation().then(refresh),
   });
 
   const run = state?.agent ?? null;
@@ -132,6 +133,13 @@ export function App() {
         <div className="flex items-center gap-1">
           {state && <StatusPill tone={groqTone(state.groq)} label={groqShortLabel(state.groq)} />}
           {failed && <StatusPill tone="danger" label="Extension error" />}
+          <IconButton
+            label="Clear conversation"
+            disabled={console_.messages.length === 0 || taskRunning || console_.busy}
+            onClick={console_.clear}
+          >
+            <Trash2 aria-hidden="true" className="size-4" />
+          </IconButton>
           <IconButton label="Settings" onClick={() => setShowSettings(true)}>
             <Settings aria-hidden="true" className="size-4" />
           </IconButton>
@@ -164,25 +172,8 @@ export function App() {
           messages={console_.messages}
           onSwitchTab={switchTab}
           onRetry={console_.submit}
-          emptyState={
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-              <p className="max-w-56 text-[13px] leading-relaxed text-muted">
-                Tell Dopilot what to do, in your own words. Nothing has been run yet.
-              </p>
-              <div className="flex flex-wrap justify-center gap-1.5">
-                {['Open a new tab', 'list tabs', 'help'].map((example) => (
-                  <button
-                    key={example}
-                    type="button"
-                    onClick={() => console_.submit(example)}
-                    className="rounded-full border border-line px-2.5 py-1 text-xs text-muted transition duration-150 hover:bg-raised hover:text-ink"
-                  >
-                    {example}
-                  </button>
-                ))}
-              </div>
-            </div>
-          }
+          onOpenSettings={() => setShowSettings(true)}
+          emptyState={<Welcome groq={state?.groq} onRun={console_.submit} />}
         />
       </main>
 
@@ -197,7 +188,7 @@ export function App() {
                 onClose={closeTab}
               />
             </Collapsible>
-            <Collapsible label={`Recent actions (${state.recentActions.length})`}>
+            <Collapsible label={`Activity (${state.recentActions.length})`}>
               <ActionList actions={state.recentActions} />
             </Collapsible>
           </>

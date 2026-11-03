@@ -7,7 +7,8 @@ import type {
   ViewportState,
   VisualSnapshot,
 } from '@dopilot/shared';
-import { SCREENSHOT_REUSE_MS } from '@dopilot/shared';
+import { DEFAULT_PREFERENCES, SCREENSHOT_REUSE_MS } from '@dopilot/shared';
+import type { Preferences } from '@dopilot/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserApi } from './browser-commands';
 import { createToolService } from './tool-service';
@@ -35,12 +36,7 @@ let status: GroqStatus;
 let capture: ReturnType<typeof vi.fn>;
 let content: { send: ReturnType<typeof vi.fn>; canAccess: ReturnType<typeof vi.fn> };
 let image: { process: ReturnType<typeof vi.fn>; annotate: ReturnType<typeof vi.fn> };
-let preferences = {
-  vision: true,
-  speechFallback: false,
-  voiceEngine: 'auto' as const,
-  modelFallback: true,
-};
+let preferences: Preferences = { ...DEFAULT_PREFERENCES };
 let grounded: unknown;
 let describeFacts: unknown;
 let vision: ReturnType<typeof createVisionService>;
@@ -77,7 +73,7 @@ beforeEach(() => {
   time = 1000;
   replies = [];
   requests = [];
-  preferences = { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true };
+  preferences = { ...DEFAULT_PREFERENCES };
   tab = { id: 1, windowId: 5, active: true, url: 'https://a.com/page?token=x', status: 'complete' };
   snapshot = {
     viewport,

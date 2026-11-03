@@ -18,6 +18,7 @@ const REQUIRED = [
   'open_tabs',
   'navigate',
   'switch_tab',
+  'switch_tab_by_name',
   'close_tab',
   'reload_tab',
   'go_back',

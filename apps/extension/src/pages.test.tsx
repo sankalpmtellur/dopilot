@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { PROTOCOL_VERSION } from '@dopilot/shared';
+import { DEFAULT_PREFERENCES, PROTOCOL_VERSION } from '@dopilot/shared';
 import type { ExtensionState, GroqStatus, PanelRequest } from '@dopilot/shared';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
@@ -37,7 +37,7 @@ const state: ExtensionState = {
   currentTabId: 7,
   groq,
   agent: null,
-  preferences: { vision: true, speechFallback: false, voiceEngine: 'auto', modelFallback: true },
+  preferences: DEFAULT_PREFERENCES,
   recentActions: [],
 };
 
@@ -396,5 +396,22 @@ describe('settings', () => {
     expect(chrome.permissions.request).not.toHaveBeenCalled();
     await userEvent.click(allow);
     expect(chrome.permissions.request).toHaveBeenCalledWith({ permissions: ['tabs'] });
+  });
+});
+
+describe('side panel first run', () => {
+  it('explains itself, offers key setup, and marks what needs a key', async () => {
+    render(<App />);
+    expect(await screen.findByText('Welcome to Dopilot')).toBeTruthy();
+    expect(await screen.findByLabelText('Your key')).toBeTruthy();
+    expect(screen.getByText('What Dopilot asks permission for')).toBeTruthy();
+    expect(screen.getAllByText('Needs a key').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /Summarize/ }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('has a clear button, which does nothing until there is something to clear', async () => {
+    render(<App />);
+    const clear = await screen.findByRole('button', { name: 'Clear conversation' });
+    expect(clear.hasAttribute('disabled')).toBe(true);
   });
 });

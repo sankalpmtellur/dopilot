@@ -13,6 +13,8 @@ export interface ConversationViewProps {
   onSwitchTab?: (tab: TabInfo) => void;
   /** Runs an instruction again, from the button on a task that failed. */
   onRetry?: (instruction: string) => void;
+  /** Only extension pages pass this. */
+  onOpenSettings?: () => void;
 }
 
 /** How long it took and what it cost, in the same few words whichever way it ran. */
@@ -35,10 +37,12 @@ function MessageBubble({
   message,
   onSwitchTab,
   onRetry,
+  onOpenSettings,
 }: {
   message: ConsoleMessage;
   onSwitchTab?: ((tab: TabInfo) => void) | undefined;
   onRetry?: ((instruction: string) => void) | undefined;
+  onOpenSettings?: (() => void) | undefined;
 }) {
   if (message.role === 'user') {
     return (
@@ -61,14 +65,27 @@ function MessageBubble({
     <div className="animate-rise">
       <p className={`text-sm break-words whitespace-pre-wrap ${tone}`}>{message.text}</p>
       {message.hint && <p className="mt-0.5 text-xs text-muted">{message.hint}</p>}
-      {message.retry && onRetry && (
-        <button
-          type="button"
-          onClick={() => onRetry(message.retry as string)}
-          className="mt-1.5 rounded-md border border-line px-2 py-0.5 text-xs text-muted transition duration-150 hover:bg-raised hover:text-ink"
-        >
-          Try again
-        </button>
+      {((message.retry && onRetry) || (message.action === 'settings' && onOpenSettings)) && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {message.action === 'settings' && onOpenSettings && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="rounded-md border border-line px-2 py-0.5 text-xs text-ink transition duration-150 hover:bg-raised"
+            >
+              Open settings
+            </button>
+          )}
+          {message.retry && onRetry && (
+            <button
+              type="button"
+              onClick={() => onRetry(message.retry as string)}
+              className="rounded-md border border-line px-2 py-0.5 text-xs text-muted transition duration-150 hover:bg-raised hover:text-ink"
+            >
+              Try again
+            </button>
+          )}
+        </div>
       )}
       {message.steps && message.steps.length > 0 && (
         <details className="group mt-1.5">
@@ -104,6 +121,7 @@ export function ConversationView({
   emptyState,
   onSwitchTab,
   onRetry,
+  onOpenSettings,
 }: ConversationViewProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const count = messages.length;
@@ -129,6 +147,7 @@ export function ConversationView({
           message={message}
           onSwitchTab={onSwitchTab}
           onRetry={onRetry}
+          onOpenSettings={onOpenSettings}
         />
       ))}
       <div ref={endRef} />

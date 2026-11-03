@@ -304,3 +304,25 @@ describe('Groq’s actual behavior', () => {
     expect(result.usage).toEqual({ promptTokens: 120, completionTokens: 8 });
   });
 });
+
+describe('recovering calls written as text', () => {
+  it('keeps nested arguments whole', () => {
+    expect(
+      salvageToolCall('<function=open_tabs>{"urls":["https://a.example/?x={y}"],"activate":1}'),
+    ).toMatchObject({
+      name: 'open_tabs',
+      arguments: { urls: ['https://a.example/?x={y}'], activate: 1 },
+    });
+  });
+
+  it('understands a whole call written as JSON', () => {
+    expect(
+      salvageToolCall('{"name":"navigate","arguments":{"url":"https://a.example/"}}'),
+    ).toMatchObject({ name: 'navigate', arguments: { url: 'https://a.example/' } });
+  });
+
+  it('ignores ordinary answers and broken JSON', () => {
+    expect(salvageToolCall('{"answer":"forty two"}')).toBeNull();
+    expect(salvageToolCall('<function=navigate>{"url":')).toBeNull();
+  });
+});
